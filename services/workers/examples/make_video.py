@@ -27,16 +27,10 @@ from splat_fake import png_bytes, point_colors, render_view  # noqa: E402
 import shutil  # noqa: E402
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=list(SCENARIOS))
-    ap.add_argument("out")
-    ap.add_argument("--fps", type=float, default=8.0)
-    args = ap.parse_args()
-
-    scenario = SCENARIOS[args.scenario]
+def render_video(scenario, out: str | Path, fps: float = 8.0):
+    """Render the scenario to an .mp4 at `out`; returns the Rendered scene (ground truth)."""
     r = render(scenario)
-    cams = camera_path(scenario.conditions.camera, scenario.duration_s, n=int(scenario.duration_s * args.fps) + 1)
+    cams = camera_path(scenario.conditions.camera, scenario.duration_s, n=int(scenario.duration_s * fps) + 1)
     colors = point_colors(r)
     # denser points so the frames have enough texture for feature matching
     rng = np.random.default_rng(0)
@@ -49,11 +43,22 @@ def main() -> int:
             (t / f"{i:05d}.png").write_bytes(png_bytes(render_view(cam, pts, cols, width=640, height=480, radius_m=0.12)))
         sf.write(t / "audio.wav", r.recording.T, r.sample_rate, subtype="PCM_16")
         subprocess.run(
-            [shutil.which("ffmpeg") or "ffmpeg", "-y", "-v", "error", "-framerate", str(args.fps), "-i", str(t / "%05d.png"), "-i", str(t / "audio.wav"),
-             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-shortest", args.out],
+            [shutil.which("ffmpeg") or "ffmpeg", "-y", "-v", "error", "-framerate", str(fps), "-i", str(t / "%05d.png"), "-i", str(t / "audio.wav"),
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-shortest", str(out)],
             check=True,
         )
-    print(f"wrote {args.out}: {len(cams)} frames, {scenario.duration_s} s, stereo audio")
+    return r
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("scenario", choices=list(SCENARIOS))
+    ap.add_argument("out")
+    ap.add_argument("--fps", type=float, default=8.0)
+    args = ap.parse_args()
+    r = render_video(SCENARIOS[args.scenario], args.out, args.fps)
+    channels = "stereo" if r.recording.shape[0] == 2 else "mono"
+    print(f"wrote {args.out}: {r.scenario.duration_s} s, {channels} audio")
     return 0
 
 

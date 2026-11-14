@@ -84,6 +84,13 @@ The CPU defaults are set in `run.stage_config`: at most `--max-keyframes 120` ke
 
 `examples/make_video.py park_walk out.mp4` renders an example memory to a video with stereo sound and known source positions, for testing the upload path.
 
+`examples/run_visual.py [scenario ...] [--steps 300]` makes **real-pipeline versions of the audio examples**, as `<scenario>_real` in `examples/out/`:
+- It renders each scene to video and runs the real ingest, COLMAP poses and `torch` splat training. Keep `--steps` low on a CPU.
+- It fits the similarity transform from the scene's true cameras to the recovered ones (rotation from orientations, scale and offset from positions) and moves the ground truth into the pipeline frame.
+- It then runs the audio stages with the stand-in models on the real outputs, and writes `debug/truth.json`, `report.md` and `map.svg`.
+
+hard_mode's splat is scaled by 0.5 afterwards for the debugger's alignment check. A scene whose SfM fails (`courtyard_static` turns in place) is reported, not forced.
+
 ## Models
 
 Each runs on the CPU, so there's no GPU needed. Weights download on first use, except AudioSep's.
