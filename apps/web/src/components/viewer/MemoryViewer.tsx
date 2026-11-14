@@ -197,7 +197,7 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x101014);
   scene.add(new SparkRenderer({ renderer }));
-  const camera = new THREE.PerspectiveCamera(60, el.clientWidth / el.clientHeight, 0.05, 1000);
+  const camera = new THREE.PerspectiveCamera(60, el.clientWidth / el.clientHeight, 0.05, 20000);
 
   // ---- spawn
   const nav = manifest.navigation ?? {};

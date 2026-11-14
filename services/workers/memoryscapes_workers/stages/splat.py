@@ -39,7 +39,7 @@ from memoryscapes_workers.visual.splat_post import DEFAULT_LODS, CleanupConfig, 
 from memoryscapes_workers.visual.train import TRAINER_PRESETS, TrainConfig, TrainerName
 
 STAGE = "splat"
-VERSION = "3"  # 2: gsplat-matching rasterizer; 3: docs/SPLAT_OUTPUTS.md layout (meta, metrics, renders, lods/)
+VERSION = "4"  # 2: gsplat-matching rasterizer; 3: SPLAT_OUTPUTS.md layout; 4: open scenes (sky dome)
 
 
 class SplatConfig(BaseModel):
@@ -58,6 +58,13 @@ def resolve_config(raw: dict) -> SplatConfig:
     trainer = detect_trainer() if cfg.trainer == "auto" else cfg.trainer
     train = {**TRAINER_PRESETS.get(trainer, {}), **dict(raw.get("train", {}))}
     return SplatConfig(**{**dict(raw), "trainer": trainer, "train": train})
+
+
+def _expected_dome(scene, train_cfg) -> float | None:
+    """The dome radius the trainer will use (previews are cleaned before it reports)."""
+    far = float(np.percentile(np.linalg.norm(scene.points - scene.cam_centers.mean(axis=0), axis=1), 95))
+    unbounded = train_cfg.unbounded == "on" or far > train_cfg.unbounded_ratio * scene.scene_scale
+    return max(3.0 * far, 50.0) if unbounded and train_cfg.sky_dome_points > 0 else None
 
 
 def _trainer_version(trainer: str) -> str:
@@ -90,7 +97,7 @@ def _splat(io: StageIO, cfg: SplatConfig) -> dict:
     def on_checkpoint(step: int, cloud: splat_io.GaussianCloud) -> None:
         if not cfg.publish_preview:
             return
-        preview, _ = splat_post.cleanup(cloud, scene.cam_centers, cfg.cleanup, scene.points)
+        preview, _ = splat_post.cleanup(cloud, scene.cam_centers, cleanup_cfg(), scene.points)
         splat_io.write_spz(out / "preview.spz", splat_post.make_lod(preview, cfg.lods[-1]))
         io.publish_early("preview.spz")
         io.progress(0.1 + 0.8 * step / max(cfg.train.steps, 1), f"preview at step {step}")
@@ -101,6 +108,14 @@ def _splat(io: StageIO, cfg: SplatConfig) -> dict:
         (out / "renders").mkdir(exist_ok=True)
         imwrite_rgb(out / "renders" / f"{frame_id}.png", rgb)
 
+    def cleanup_cfg(metrics: dict | None = None):
+        """Keep a sky dome: crop beyond it (an open scene's dome is far past the SfM points)."""
+        dome = (metrics or {}).get("sky_dome_radius_m") or (
+            None if cfg.train.unbounded == "off" else _expected_dome(scene, cfg.train))
+        if not dome or cfg.cleanup.crop_radius_m is not None:
+            return cfg.cleanup
+        return cfg.cleanup.model_copy(update={"crop_radius_m": 1.3 * dome})
+
     result = trainer.train(
         scene, cfg.train, on_checkpoint=on_checkpoint,
         on_progress=lambda f, msg: io.progress(0.05 + 0.85 * f, msg), on_render=on_render,
@@ -108,7 +123,7 @@ def _splat(io: StageIO, cfg: SplatConfig) -> dict:
     raw = result.cloud
     splat_io.write_ply(out / "point_cloud.ply", raw)
 
-    cleaned, report = splat_post.cleanup(raw, scene.cam_centers, cfg.cleanup, scene.points)
+    cleaned, report = splat_post.cleanup(raw, scene.cam_centers, cleanup_cfg(result.metrics), scene.points)
     if len(cleaned) == 0:
         raise StageError(STAGE, "Cleanup removed every gaussian; check the poses stage output.")
     io.progress(0.95, f"cleaned {len(raw)} -> {len(cleaned)} gaussians")

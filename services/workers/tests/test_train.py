@@ -173,3 +173,24 @@ def test_presets_and_trainer_names():
     with pytest.raises(ValueError):
         get_trainer("nope")
     assert set(TRAINER_PRESETS["torch"]) <= set(TrainConfig.model_fields)
+
+
+def test_open_scene_adds_a_sky_dome_and_keeps_far_gaussians(scene):
+    """Outdoor footage reaches far past the camera path; the sky has no SfM points."""
+    from memoryscapes_workers.visual.train import _load_images, sky_dome
+
+    images, Ks = _load_images(scene, W)
+    pts, cols, radius = sky_dome(scene, images, Ks, n=500, far=20.0)
+    center = scene.cam_centers.mean(axis=0)
+    dist = np.linalg.norm(pts - center, axis=1)
+    assert radius == 60.0 and np.allclose(dist, 60.0, atol=1e-3)
+    elev = np.degrees(np.arcsin((pts[:, 1] - center[1]) / dist))  # world +y is up
+    assert elev.max() > 85 and -16 < elev.min() < -14  # overhead down to 15 below the horizon
+    assert cols.min() >= 0 and cols.max() <= 1
+
+    bounded = GaussianTrainer("torch", device="cpu").train(scene, small_config(steps=5))
+    assert bounded.metrics["unbounded"] is False and bounded.metrics["sky_dome_radius_m"] is None
+    opened = GaussianTrainer("torch", device="cpu").train(
+        scene, small_config(steps=5, unbounded="on", sky_dome_points=300))
+    assert opened.metrics["unbounded"] is True and opened.metrics["sky_dome_radius_m"] >= 50
+    assert opened.metrics["gaussians"] >= bounded.metrics["gaussians"] + 250
