@@ -150,3 +150,42 @@ def test_image_io_handles_non_ascii_paths(tmp_path):
             assert err.max() == 0
         else:  # lossy, and chroma subsampling smears the small block
             assert err.mean() < 20
+
+
+@needs_ffmpeg
+@needs_cv2
+def test_separate_recording_is_aligned_to_the_video(ctx, small_video, tmp_path):
+    """A recorder started 1.3 s before the camera, at 44.1 kHz with its own noise."""
+    import subprocess
+
+    import soundfile as sf
+    from scipy import signal
+
+    from memoryscapes_workers.storage import read_wav
+    from memoryscapes_workers.visual.audio_align import find_offset
+
+    video, _ = small_video
+    track = tmp_path / "track.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-vn", "-y", str(track)], check=True)
+    audio, sr = sf.read(str(track), dtype="float32", always_2d=True)
+    rng = np.random.default_rng(0)
+    head = 0.05 * rng.standard_normal((int(1.3 * sr), audio.shape[1])).astype(np.float32)
+    rec = signal.resample_poly(np.concatenate([head, audio]), 441, 480, axis=0)
+    rec += 0.01 * rng.standard_normal(rec.shape)
+    sep = tmp_path / "recorder.wav"
+    sf.write(str(sep), rec.astype(np.float32), 44100, subtype="PCM_16")
+
+    ctx.storage.upload(video, f"{ctx.memory_id}/upload/{video.name}")
+    ctx.storage.upload(sep, f"{ctx.memory_id}/upload/recorder.wav")
+    from memoryscapes_workers.stages import ingest
+
+    ingest.run(ctx)
+    meta = json.loads(ctx.storage.read_bytes(ctx.key("ingest", "meta.json")))
+    al = meta["audio"]["alignment"]
+    assert al["applied"] and abs(al["offset_s"] - 1.3) < 0.002, al
+    assert not any("align" in w or "started together" in w for w in meta["warnings"])
+    # audio.wav is now on the video's clock and as long as the video.
+    aligned, a_sr = read_wav(ctx.storage, ctx.key("ingest", "audio.wav"))
+    vid, v_sr = read_wav(ctx.storage, ctx.key("ingest", "video_audio.wav"))
+    assert a_sr == 44100 and abs(aligned.shape[1] / a_sr - vid.shape[1] / v_sr) < 0.05
+    assert abs(find_offset(vid, v_sr, aligned, a_sr).offset_s) < 0.002

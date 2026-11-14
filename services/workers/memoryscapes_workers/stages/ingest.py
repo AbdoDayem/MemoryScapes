@@ -9,8 +9,12 @@ Reads  {memory_id}/upload/        the uploaded video (+ optional separate audio 
 Writes {memory_id}/ingest/
     frames/frame_00000.jpg ...    upright keyframes, long side <= output_max_side
     audio.wav                     primary audio (separate recording if uploaded,
-                                  otherwise the video's track), original rate/channels
+                                  otherwise the video's track), original rate/channels,
+                                  on the video's clock: t=0 is the first video frame
     video_audio.wav               the video's own track, when a separate file was given
+
+A separate recording is aligned to the video by cross-correlating it with the video's
+own soundtrack (visual/audio_align.py), then trimmed or padded to the video's length.
     meta.json                     media info, geo, capture time, keyframe timeline, and
                                   the "mic" block the audio stages read
 
@@ -28,7 +32,7 @@ from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.stagekit import UPLOAD_PREFIX, StageError, StageIO, run_stage, write_json
 
 STAGE = "ingest"
-VERSION = "2"  # 2: audio-stage contract outputs (audio.wav, meta.json, cameras.json)
+VERSION = "3"  # 2: audio-stage contract outputs (audio.wav, meta.json); 3: separate audio aligned
 
 
 class IngestConfig(BaseModel):
@@ -68,6 +72,38 @@ def mic_info(audio_meta: dict | None) -> dict:
     else:
         kind = "multichannel"
     return {"channels": channels, "layout": kind, "spacing_m": None}
+
+
+def _align_separate(raw: Path, video_track: Path | None, dest: Path, duration_s: float,
+                    warnings: list[str]) -> dict:
+    """Write ``dest`` = the separate recording on the video's clock; return what was done."""
+    import shutil
+
+    import soundfile as sf
+
+    from memoryscapes_workers.visual.audio_align import apply_alignment, find_offset
+
+    if video_track is None:
+        shutil.copyfile(raw, dest)
+        warnings.append("The video has no sound to align the separate recording with; "
+                        "assuming both started together.")
+        return {"applied": False, "reason": "video has no audio track"}
+    sep, sep_sr = sf.read(str(raw), dtype="float32", always_2d=True)
+    vid, vid_sr = sf.read(str(video_track), dtype="float32", always_2d=True)
+    a = find_offset(vid.T, vid_sr, sep.T, sep_sr)
+    sep_len = len(sep) / sep_sr
+    overlap = min(sep_len, a.offset_s + duration_s) - max(0.0, a.offset_s)
+    if not a.reliable or overlap < min(5.0, 0.5 * duration_s):
+        shutil.copyfile(raw, dest)
+        warnings.append(f"Couldn't match the separate recording to the video's sound "
+                        f"(confidence {a.confidence:.0f}); assuming both started together.")
+        return {"applied": False, "reason": "no reliable match", **a.to_dict()}
+    aligned = apply_alignment(sep.T, sep_sr, a, duration_s)
+    sf.write(str(dest), aligned.T, sep_sr, subtype="PCM_24")
+    if overlap < duration_s - 0.5:
+        warnings.append(f"The separate recording covers only {overlap:.0f} s of the "
+                        f"{duration_s:.0f} s video; the rest is silent.")
+    return {"applied": True, "method": "gcc-phat", **a.to_dict(), "overlap_s": round(overlap, 2)}
 
 
 def _pick_inputs(upload: Path) -> tuple[Path, Path | None]:
@@ -111,12 +147,13 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
     audio_meta = None
     if separate_audio is not None:
         a_info = video.probe(separate_audio)
-        path = video.demux_audio(separate_audio, out / "audio", a_info.audio and a_info.audio.channels)
-        audio_meta = {"file": path.name, "source": "separate_file", "original": separate_audio.name,
+        raw = video.demux_audio(separate_audio, io.work_dir / "separate_raw",
+                                a_info.audio and a_info.audio.channels)
+        audio_meta = {"file": "audio.wav", "source": "separate_file", "original": separate_audio.name,
                       **(vars(a_info.audio) if a_info.audio else {})}
-        warnings.append("Separate audio file is not time-aligned to the video yet.")
-        if info.audio:
-            video.demux_audio(src, out / "video_audio", info.audio.channels)
+        video_track = video.demux_audio(src, out / "video_audio", info.audio.channels) if info.audio else None
+        audio_meta["alignment"] = _align_separate(raw, video_track, out / "audio.wav",
+                                                  info.duration_s, warnings)
     elif info.audio:
         path = video.demux_audio(src, out / "audio", info.audio.channels)
         audio_meta = {"file": path.name, "source": "video_track", **vars(info.audio)}
