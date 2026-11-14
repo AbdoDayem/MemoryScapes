@@ -1,10 +1,6 @@
-import UploadForm from "@/components/upload/UploadForm";
+import HomePage from "@/components/home/HomePage";
 
+/** /upload: the globe, with the upload panel already open. */
 export default function UploadPage() {
-  return (
-    <main>
-      <h1>Create a memory</h1>
-      <UploadForm />
-    </main>
-  );
+  return <HomePage startWithUpload />;
 }

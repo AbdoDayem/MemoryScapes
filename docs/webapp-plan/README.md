@@ -32,7 +32,8 @@ definitions are in `backend.md`, and `frontend.md` links to them instead of repe
 
 ## Goal
 
-1. The homepage `/` is a 3D globe (night Earth) showing every memory as a glowing point.
+1. The homepage `/` is a cute low-poly 3D globe showing every memory as a small pin blowing
+   soap bubbles.
 2. **+ New memory** opens an upload panel over the globe: pick a phone video (and optionally
    a separate audio recording), give it a title, click the globe where it was filmed, upload.
 3. The memory appears on the globe right away and processes. Clicking it opens a preview
@@ -103,7 +104,7 @@ Split in PRs: **2a** backend for uploads; **2b** the globe homepage with the upl
 - [x] 2a: `POST /memories`, `PUT …/upload/{name}`, `POST …/process`, `GET /memories`; `GET /memories/{id}` reads the database row too
 - [x] Design: globe homepage + upload panel (`frontend.md`)
 - [ ] 2b-backend: `GET /globe`, `PATCH /memories/{id}`
-- [ ] 2b-frontend (after Marko's PR #11): globe, preview card, "My memories", upload panel
+- [x] 2b-frontend: low-poly globe with pin-and-bubble markers, preview card, "My memories", upload panel
 - [ ] Demo: upload a phone video, place it on the globe, see it process, enter it
 
 ### Phase 3: Slice 2, progress (about 2 days)

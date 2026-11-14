@@ -4,25 +4,22 @@ Part of the [web app plan](README.md). This file covers the pages and components
 `apps/web`. The endpoints they call are defined in [`backend.md`](backend.md) § API contract.
 Don't repeat them here.
 
-## What exists on `main`
+## What exists
 
 Next.js 15, React 19, TypeScript. Run with `npm run dev:web` from the repo root
-(`localhost:3000`). Dependencies already include `three` and `globe.gl`.
+(`localhost:3000`), with the API on `localhost:8000` (`NEXT_PUBLIC_API_URL`).
 
-| Route | File | Today |
+| Route | File | State |
 |---|---|---|
-| `/` | `src/app/page.tsx` → `components/globe/MemoryGlobe.tsx` | "Memory globe (not implemented)" |
-| `/upload` | `src/app/upload/page.tsx` → `components/upload/UploadForm.tsx` | "Upload form (not implemented)" |
-| `/memories/[id]` | `src/app/memories/[id]/page.tsx` → `components/viewer/MemoryViewer.tsx` | **Works** (Marko, PR #5): the 3D scene with its sound. While processing it polls `getMemory` every 5 s and shows a simple ✓/… list of stages. |
+| `/` | `src/app/page.tsx` → `components/home/HomePage.tsx` | **Built (2b-frontend):** the low-poly globe of memories, preview card, "My memories", upload panel |
+| `/upload` | `src/app/upload/page.tsx` → `HomePage` with the upload panel open | **Built** |
+| `/memories/[id]` | `components/viewer/MemoryViewer.tsx` | **Marko's:** the 3D scene with SATIE sound; stage list and stopping on `failed` (PR #11) |
 
-Also: `src/lib/api.ts` (`MemoryResponse` type, `getMemory`, `queryGlobe`, pointing at
-`NEXT_PUBLIC_API_URL`, default `http://localhost:8000`), `components/audio/SatieAudioEngine.ts` (sound is always SATIE's)
-and `components/viewer/navigation.ts` (the viewer's). Scripts: `npm run typecheck` and
-`npm test --workspace @memoryscapes/web`. CI: `.github/workflows/web.yml`.
+Scripts: `npm run typecheck`, `npm test` and `npm run build` (each with
+`--workspace @memoryscapes/web`). CI: `.github/workflows/web.yml`.
 
 **Ours:** the globe homepage, the preview card, the upload panel. **Not ours:** `MemoryViewer`
-and its 3D scene and sound (Marko). Our pieces on `/memories/[id]` plug into his page, so
-agree the changes with him (§ Page: `/memories/[id]`).
+and its 3D scene and sound (Marko).
 
 ## `src/lib/api.ts`
 
@@ -47,9 +44,9 @@ Errors: throw an `ApiError` with the status code and the server's `detail`, so t
 | Layer | Tech |
 |---|---|
 | Framework | Next.js 15, React 19, TypeScript |
-| Globe | **globe.gl** (built on three.js): Earth, atmosphere, points, rings, labels, fly-to. Its three.js scene is open for our own effects (stars, glow). |
+| Globe | **globe.gl** (built on three.js): land polygons, rings, HTML labels, custom three.js objects, fly-to. Its scene is open for our own objects (ocean, clouds, markers). |
 | Viewer (Marko's) | three.js + Spark |
-| Styling | Plain CSS modules |
+| Styling | One scoped stylesheet (`components/home/home.css`, everything under `.ms-home`, so the viewer isn't affected); Nunito via `@fontsource/nunito` (bundled, no Google Fonts at runtime) |
 
 Why globe.gl: it is three.js, with the globe parts (lat/lon on a sphere, atmosphere, camera
 flights) done. Raw three.js would rebuild all that; CesiumJS (terrain, GIS) is heavy for
@@ -58,63 +55,71 @@ pins on a globe; Mapbox's globe needs an API key and is priced by usage.
 ## Page: `/` (home: the globe)
 
 The homepage is a full-screen 3D globe of every memory, with the upload entry on top of it.
+The look was chosen from browser mockups (night Earth → light beams → **cute low-poly**),
+because the team wanted it cute and fun to play with.
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
-│ MemoryScapes                                  [+ New memory]  │
-│                         ✦     ✦        ✦                      │
-│               ✦     ╭─────────────╮                           │
-│                   ╭─┘ · city lights └─╮      ┌──────────────┐ │
-│                  │   ●  Golden Gate    │      │ Golden Gate  │ │
-│                  │  ◉3      ·    ●     │      │ walk         │ │
-│                   ╰─╮   ·  night side╭─╯      │ Oct 2, 2026  │ │
-│                     ╰───────────────╯         │ ● Ready      │ │
-│             ✦  (soft blue atmosphere glow)    │[Enter memory]│ │
-│                                         ✦     └──────────────┘ │
-│  [≡ My memories]                                              │
+│ MemoryScapes  immerse in your memory          [+ New memory]  │
+│        ☁            (soft blue → peach sky)        ☁          │
+│               ╭──────── faceted pastel ocean ───────╮         │
+│             ╭─┘  🟩🟨 chunky country tiles 🟪🟩     └─╮       │
+│            │    °o○  ← bubbles     ┌──────────────┐  │        │
+│            │     📍 Golden Gate     │ Golden Gate  │  │        │
+│            │  🟡3 (cluster)         │ walk         │  │        │
+│             ╰─╮                     │ ● Ready      │╭─╯       │
+│               ╰─────────────────────│[Enter memory]│╯         │
+│  [≡ My memories (11)]               └──────────────┘          │
 └───────────────────────────────────────────────────────────────┘
 ```
 
-**Look (night Earth):**
-- Black space with sparse stars.
-- The Earth's night side with city lights: NASA Black Marble (public domain), with a subtle
-  bump map.
-- A soft blue atmosphere glow.
-- Slow auto-rotation until the user interacts. It pauses while a panel is open.
-- Textures live in `apps/web/public/globe/`.
+**Look** (`components/globe/world.ts`):
+- A soft daytime sky gradient (blue to peach) behind a transparent canvas.
+- A **faceted low-poly ocean** (pastel blue icosahedron with a slight wobble).
+- **Chunky, flat-shaded country tiles** in soft greens, yellows and lavender, at a few heights.
+  Each country always gets the same colour. No pinks or peaches: they'd blend with the pins.
+  Shapes: `public/globe/countries-110m.geojson` (Natural Earth 1:110m, public domain).
+- Little low-poly **clouds** drifting around the planet; a white atmosphere.
+- Slow auto-rotation until the user grabs the globe.
 
-**Memories:**
+**Memories: a small pin blowing soap bubbles** (`components/globe/markers.ts`):
+- A small low-poly pin (45% size, short stick) with a white outline, a shine and a soft glow.
+- Low-poly **bubbles** (80 flat facets, pastel rainbow, a blocky white shine, 25% opacity)
+  float up from the pin's head, wobble and pop.
 
-| Status | Looks like |
-|---|---|
-| `ready` | Warm amber point with a slow pulse ring |
-| `draft` / `uploading` / `processing` | Dimmer cool-blue point, faster pulse |
-| `failed` | Grey point. Its card says why and offers "Try again". |
+| Status | Pin | Bubbles |
+|---|---|---|
+| `ready` | Coral, gently bobbing, ripple rings | 6 |
+| `draft` / `uploading` / `processing` | Blue, hopping and spinning | 3, slower |
+| `failed` | Grey, drooping | none |
+| cluster | Bigger and golden, a white count badge | 9 |
 
-- **Hover:** a small label with the title and capture date.
-- **Click:** the camera flies to it (`pointOfView`) and the preview card opens (below).
-- **Zoomed out:** nearby points merge into a **cluster** with a count; clicking one zooms in.
-  Clustering runs in the browser (`components/globe/clusters.ts`): group by a grid whose cell
-  size shrinks with camera altitude.
-- **"My memories"** (bottom left): a list of every memory, including ones without a location.
-  It's the keyboard / screen-reader / no-WebGL way in. Clicking one flies to it, or opens it
-  if it has no location.
-- **Empty:** "No memories yet. Upload your first one."
+- **Findable at any zoom:** markers keep about the same size on screen, glow, and have a
+  large invisible hit area. Name tags appear when zoomed in.
+- **Play:** hover grows a marker; a click squashes it like jelly; tapping land or sea makes
+  a white splash.
+- **Clusters** (`components/globe/clusters.ts`): memories merge only when they'd overlap on
+  screen (the merge distance shrinks with camera altitude), so they come apart exactly when
+  you can pick them. Clicking a cluster zooms in just far enough to separate it. Memories at
+  practically the same spot never separate: clicking opens a **"N memories here"** list.
+- **"My memories"** (bottom left): every memory, including ones without a location. It's the
+  keyboard / screen-reader / no-WebGL way in.
+- **Empty:** "No memories yet. Tap “+ New memory” to add your first one."
 
-**Data:** `queryGlobe()` on load and after an upload or edit (whole world: few memories for
-now). `globe.gl` touches `window`, so load the globe only in the browser:
-`dynamic(() => import(...), { ssr: false })`.
+**Data:** `queryGlobe()` + `listMemories()` on load and after any change. While a memory is
+**processing**, the page refreshes every 8 s; markers are only rebuilt when something visible
+changed. `scene.ts` (globe.gl) touches `window`, so `MemoryGlobe.tsx` imports it inside an
+effect.
 
 ## Preview card (`components/globe/MemoryCard.tsx`)
 
-- Title, capture date, status.
-- **Enter memory** opens the viewer at `/memories/{id}`. While processing, it says "View
-  progress" instead.
-- **Failed:** the reason (`error`) and "Try again" (`startProcessing`).
-- **No location yet** and the video had GPS (`suggested_location`): "Use the video's location"
-  (`updateMemory` with that lat/lon).
-- "Edit": title, description, and "Move pin" (click the globe), saved with `updateMemory`.
-  Note: "Locations are rounded to about 100 m."
+- Title, capture (or added) date, location, status.
+- **Enter memory** (ready) or **View progress** (processing) opens `/memories/{id}`.
+- **Failed:** the reason (`error`) and **Try again** (`startProcessing`).
+- **Edit title**, and **Move pin** / **Place on globe** (then tap the globe), saved with
+  `updateMemory`. "Locations are rounded to about 100 m."
+- **No location yet** and the video had GPS (`suggested_location`): **Use the video's
+  location** (`updateMemory` with `location_source: "video_gps"`).
 
 ## Upload panel (`components/upload/UploadPanel.tsx`)
 
@@ -140,53 +145,44 @@ stays live behind it. On phones it's a bottom sheet.
    (opens `/memories/{id}`, Marko's viewer).
 
 **Errors:** show the server's `detail`, keep the picked files and pin, and offer retry.
-Cancelling an upload leaves a `draft` memory, which can be retried from "My memories".
+A retry reuses the same draft and skips files that already finished. Cancel (or closing the
+panel) stops everything: nothing uploads or starts processing afterwards. A cancelled upload
+leaves a `draft` memory in "My memories".
 
-## Page: `/memories/[id]` (progress, then the viewer)
+**Known limit:** retrying with a *different video file* creates a new draft and leaves the old
+one, because the API has no `DELETE /memories/{id}` yet.
 
-This page is **the viewer** (`MemoryViewer.tsx`, Marko's). It already loads the memory,
-polls every 5 s while processing, and shows the 3D scene once `status` is `ready`. We don't
-build a second page. We add two pieces to it, agreed with Marko:
+## Page: `/memories/[id]` (the viewer)
 
-**Marko's PR #11 does both of these** (stage list from `stage_detail`, stopping on `failed`).
-What's left for us is checking it against real API responses.
+Marko's `MemoryViewer.tsx`. It loads the memory, polls while processing, shows the stage list
+(from `stage_detail`), stops on `failed`, and shows the 3D scene once `ready` (PR #11). The
+upload panel reuses its stage helpers (`components/viewer/status.ts`). Editing title and
+location happens on the globe's preview card, not on this page.
 
-1. **Progress panel**, new component `components/memory/StageProgress.tsx`. It replaces the
-   viewer's small `StageList` (one line in `MemoryViewer.tsx`) while processing:
-   - The 7 stages in pipeline order (ingest, poses, splat, separate, localize, soundscape,
-     publish) from `stage_detail`, each with an icon for `pending`/`running`/`done`/`failed`/
-     `skipped`/`blocked`, its time when done, and its error when failed. Show `detail` (the
-     latest log line) under the running stage.
-   - Falls back to the plain `stages` booleans when `stage_detail` is missing (CLI memories).
-   - "This takes several minutes. You can leave and come back." A refresh picks up where it
-     was, because the viewer re-fetches.
-2. **Handling `failed`** in the viewer's polling: stop polling, show which stage failed and
-   why, and a "Try again" button (`startProcessing`). Today any status other than `ready`
-   means "keep polling", so a failed run would poll forever.
-
-Editing title and location happens on the globe's preview card, not on this page.
-Keep these changes small and in separate components, so they don't get in the way of
-Marko's work on the scene.
+Seed memories (`python -m app.seed`) have no files, so their viewer waits forever. Real
+uploads don't have this problem.
 
 ## Layout and navigation
 
 `src/app/layout.tsx`: no global header. The globe page has its own overlay (name, "+ New
-memory", "My memories"). The viewer page stays full screen with a small "← Globe" link.
+memory", "My memories"). The viewer page stays full screen. **Later:** a small "← Globe"
+link on it, agreed with Marko.
 
 ## Files
 
 | File | What |
 |---|---|
-| `components/globe/MemoryGlobe.tsx` | The globe: textures, atmosphere, stars, points, rings, clusters, fly-to, auto-rotate, pin placement |
-| `components/globe/clusters.ts` (+ `clusters.test.ts`) | Grouping by zoom, as plain functions |
-| `components/globe/MemoryCard.tsx` | The preview card |
-| `components/globe/MemoryList.tsx` | "My memories" |
+| `components/home/HomePage.tsx`, `home.css` | The page: state, polling, overlays, styles |
+| `components/globe/MemoryGlobe.tsx` | React wrapper; loads `scene.ts` in the browser |
+| `components/globe/scene.ts` | globe.gl: world, markers, clusters, tags, ripples, placing pin, animation, clean-up |
+| `components/globe/markers.ts` | The pin-and-bubbles marker |
+| `components/globe/world.ts` | Ocean, country tiles, clouds, lights |
+| `components/globe/clusters.ts` (+ `clusters.test.ts`) | Clustering by on-screen distance, as plain functions |
+| `components/globe/format.ts` | Status colours and labels, dates (no three.js) |
+| `components/globe/MemoryCard.tsx`, `MemoryList.tsx` | The preview card, "My memories" (also the "memories here" picker) |
 | `components/upload/UploadPanel.tsx` | The upload steps |
-| `src/lib/api.ts` | New functions; after Marko's PR #11, which also edits it |
-| `src/app/page.tsx`, `src/app/upload/page.tsx` | Home, and `/upload` opening the panel |
-| `public/globe/` | Night-Earth texture, bump map |
-
-`components/upload/UploadForm.tsx` (the placeholder) is replaced by `UploadPanel.tsx`.
+| `src/lib/api.ts` | One function per endpoint, `ApiError` |
+| `public/globe/countries-110m.geojson` | Country shapes |
 
 ## Checks
 
