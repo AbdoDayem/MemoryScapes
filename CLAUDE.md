@@ -4,7 +4,7 @@ MemoryScapes turns a video (or panoramas) plus an audio recording into a walkabl
 
 ## Status
 
-The project is a scaffold. API endpoints return `501`, and pipeline stages raise `NotImplementedError`. Follow the build phases in `docs/ARCHITECTURE.md` § 9. The MVP is video → COLMAP → gsplat → web viewer, with private memories only.
+Mostly a scaffold: API endpoints return `501`. In the workers, the audio stages (`separate`, `localize`, `soundscape`) are implemented and tested. The other stages raise `NotImplementedError`. Follow the build phases in `docs/ARCHITECTURE.md` § 9. The MVP is video → COLMAP → gsplat → web viewer, with private memories only. Stage data contracts are in `services/workers/README.md`.
 
 ## Layout
 
@@ -24,16 +24,19 @@ cp .env.example .env
 npm run infra:up                 # Postgres/PostGIS, Redis, MinIO (Docker)
 npm install && npm run dev:web   # web app
 cd services/api && pip install -e ".[dev]" && uvicorn app.main:app --reload
-cd services/workers && pip install -e ".[dev]"            # core
-cd services/workers && pip install -e ".[visual,audio]"   # GPU/ML extras
+cd services/workers && python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev]"   # core + tests
+cd services/workers && .venv/Scripts/python -m pytest                                            # worker tests
+cd services/workers && pip install -e ".[audio,visual,satie]"   # model backends + SATIE MCP client
 ```
 
 ## Rules for working in this repo
 
 - **The manifest is the contract** between pipeline and viewer. If you change its shape, update `memory.schema.json` and `index.ts` together, and bump `version` semantics carefully, because old memories must keep loading.
 - **One coordinate frame.** Splat, audio source positions and geolocation share one metric world frame (`coord_frame.units = "meters"`). Don't introduce unscaled or per-asset frames.
-- **Stages are idempotent** and write only under `s3://{bucket}/{memory_id}/{stage}/` (`StageContext.prefix`). A stage must be safe to re-run.
-- **SATIE stays behind `SoundscapeProvider`.** Its real API is not confirmed yet, so don't call it from anywhere else. Use `SOUNDSCAPE_PROVIDER=stub` for local work. Store raw provider output so audio can be re-rendered.
+- **Stages are idempotent** and write only under `{memory_id}/{stage}/` through `ctx.storage` (`StageContext.key`). A stage must be safe to re-run.
+- **Model backends are injected.** Stages take tagger/separator/detector/provider arguments, and `backends.py` builds the real ones from env. Tests use fakes and synthetic scenes with known ground truth; keep it that way so tests never need torch or network.
+- **SATIE stays behind `SoundscapeProvider`** (`providers/soundscape.py`, MCP via `providers/mcp_transport.py`). Don't call it from anywhere else. Use `SOUNDSCAPE_PROVIDER=stub` for local work. Store raw provider output so audio can be re-rendered.
+- **SATIE spends money.** Never raise `SATIE_MAX_CENTS` or enable `SATIE_ALLOW_GENERATION` without the developer asking. Keep `requestKey` stable for the same script so retries resume instead of re-buying.
 - **Spatialization happens on the client.** Prefer object-based audio (sources + positions). Fall back to ambisonics, never a fixed binaural render.
 - **Keep heavy ML dependencies optional** (`[visual]`, `[audio]` extras) so the API and CI stay light.
 - **Privacy before public.** Nothing becomes `public` without the publish stage's face/plate blur and speech check.
