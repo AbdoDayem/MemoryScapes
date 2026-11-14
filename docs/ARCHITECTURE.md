@@ -86,7 +86,7 @@ flowchart TB
 
   ingest -- frames --> poses --> splat
   ingest -- audio --> sep
-  splat -- "poses + geometry" --> loc
+  poses -- "poses + point cloud" --> loc
   sep -- "stems + labels" --> loc
   loc --> satie --> pub
   splat -. "splat assets / quick preview" .-> pub
@@ -130,10 +130,14 @@ This is the hardest part. Most uploads will be phone recordings: mono or stereo,
 The output is a list of `{stem_id, label, position[x,y,z] | trajectory, spread, confidence, gain}` in the splat's world frame.
 
 ### 4f. SATIE integration (`stages/soundscape.py`, `providers/soundscape.py`)
-- Isolate SATIE behind a **`SoundscapeProvider` adapter**, so its API or SDK can change without touching the pipeline, and so you can stub it in development (`SOUNDSCAPE_PROVIDER=stub`).
-- The adapter receives the stems, their positions and labels, the ambient bed, scene bounds, and an optional "mood" or extension prompt.
-- **Recommended output format:** prefer an **object-based scene description** (sources plus positions plus parameters, or generated extension stems) over a single pre-rendered binaural file. Navigation is free-roaming, so spatialization should happen at runtime on the client. If SATIE can only return rendered audio, ask for **ambisonics (FOA/HOA)**, which can still be rotated with the listener.
-- SATIE's actual interface is not yet confirmed. Check its input and output formats before committing to this contract.
+- SATIE is isolated behind a **`SoundscapeProvider` adapter**, so its API can change without touching the pipeline, and it can be stubbed in development (`SOUNDSCAPE_PROVIDER=stub`).
+- **SATIE runs through its MCP server** (`https://www.satie.world/mcp`, documented in [Attractor-Laboratories/satie-skills](https://github.com/Attractor-Laboratories/satie-skills)). The adapter follows the skill's workflow:
+  1. `satie_inspect_scene`: our placed sources become hosts, at their world positions unchanged (metres, +Y up).
+  2. `satie_brief` → `satie_compose`: a generated brief tells SATIE to use the user's own stems as clips named `memory/<id>`. If the script drops a clip, there's one revision round.
+  3. `satie_audit_scene` → `satie_realize`: capped by `SATIE_MAX_CENTS` (default 0), with a stable `requestKey` so a retry resumes rather than re-buys.
+- **Output:** a `.satie` script plus `samples.json`, played in the viewer by `satie-runtime`, which binds each host at its source's position. Spatialization stays on the client, so free-roaming navigation works. The manifest also keeps the object-based sources, so the viewer can fall back to its own `SpatialAudioEngine`.
+- If SATIE fails or would go over budget, the stage falls back to the stub and records why.
+- **Still unverified against the live server:** the scene manifest shape (`satie://schema/scene`), whether `realize` accepts our own stem URLs (and SATIE's 30 s audio limit), and headless auth for a worker. See `services/workers/README.md`.
 
 ### 4g. Privacy and publish (`stages/publish.py`)
 - Before anything goes public, **blur faces and license plates in the source frames and retrain**, or mask them in the splat.

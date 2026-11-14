@@ -47,7 +47,7 @@
           "type": "object",
           "properties": {
             "url": { "type": "string" },
-            "format": { "enum": ["stereo", "ambisonic_foa", "ambisonic_hoa"] }
+            "format": { "enum": ["mono", "stereo", "ambisonic_foa", "ambisonic_hoa"] }
           }
         },
         "sources": {
@@ -65,7 +65,8 @@
               "rolloff": { "type": "number" },
               "gain": { "type": "number" },
               "loop": { "type": "boolean" },
-              "confidence": { "type": "number" }
+              "confidence": { "type": "number" },
+              "method": { "enum": ["av", "doa", "av+doa", "diffuse"] }
             }
           }
         },
@@ -74,7 +75,22 @@
           "properties": {
             "name": { "type": "string" },
             "job_id": { "type": "string" },
-            "version": { "type": "string" }
+            "version": { "type": "string" },
+            "fallback_reason": { "type": "string" }
+          }
+        },
+        "satie": {
+          "description": "Present when SATIE produced the soundscape. The viewer plays it with satie-runtime and falls back to `sources` otherwise.",
+          "type": ["object", "null"],
+          "required": ["script_url", "samples_url", "host_map"],
+          "properties": {
+            "script_url": { "type": "string" },
+            "samples_url": { "type": "string" },
+            "host_map": {
+              "description": "SATIE host id -> audio source id; bind each host at that source's position.",
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
           }
         }
       }

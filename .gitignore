@@ -14,6 +14,9 @@ __pycache__/
 *.local
 data/
 
+# SATIE local authoring state
+.satie/
+
 # Pipeline outputs
 *.ply
 *.spz
@@ -23,3 +26,4 @@ data/
 Thumbs.db
 .vscode/
 .idea/
+*.egg-info/

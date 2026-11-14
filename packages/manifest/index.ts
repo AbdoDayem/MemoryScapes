@@ -15,6 +15,16 @@ export interface AudioSource {
   gain?: number;
   loop?: boolean;
   confidence?: number;
+  /** how the position was found: audio-visual grounding, stereo DOA, both, or not at all */
+  method?: "av" | "doa" | "av+doa" | "diffuse";
+}
+
+/** SATIE output, played in the viewer by satie-runtime. */
+export interface SatieSoundscape {
+  script_url: string;
+  samples_url: string;
+  /** SATIE host id -> AudioSource id; bind each host at that source's position */
+  host_map: Record<string, string>;
 }
 
 export interface MemoryManifest {
@@ -34,9 +44,10 @@ export interface MemoryManifest {
     original_path?: string;
   };
   audio: {
-    ambient_bed?: { url: string; format: "stereo" | "ambisonic_foa" | "ambisonic_hoa" };
+    ambient_bed?: { url: string; format: "mono" | "stereo" | "ambisonic_foa" | "ambisonic_hoa" };
     sources: AudioSource[];
-    soundscape_provider?: { name: string; job_id?: string; version?: string };
+    soundscape_provider?: { name: string; job_id?: string; version?: string; fallback_reason?: string };
+    satie?: SatieSoundscape | null;
   };
   meta: {
     title?: string;

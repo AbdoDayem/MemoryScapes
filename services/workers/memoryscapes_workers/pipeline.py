@@ -1,10 +1,12 @@
 """Pipeline DAG definition.
 
-    ingest ─┬─> poses ──> splat ─┬─> localize ──> soundscape ──> publish
-            └─> separate ────────┘
+    ingest ─┬─> poses ─┬──────────> splat ─────────────────┐
+            │          └─> localize ──> soundscape ──────┴─> publish
+            └─> separate ──┘
 
-The visual and audio branches run in parallel and meet at localization, which needs
-camera poses and scene geometry. Wire this into Temporal (or Celery for the MVP).
+The visual and audio branches run in parallel. Localization needs camera poses and the
+point cloud (not the trained splat), so the audio branch doesn't wait on splat training.
+Wire this into Temporal (or Celery for the MVP).
 """
 
 from collections.abc import Callable
@@ -28,7 +30,7 @@ DAG: dict[str, tuple[Stage, list[str]]] = {
     "poses": (poses.run, ["ingest"]),
     "splat": (splat.run, ["poses"]),
     "separate": (separate.run, ["ingest"]),
-    "localize": (localize.run, ["splat", "separate"]),
+    "localize": (localize.run, ["poses", "separate"]),
     "soundscape": (soundscape.run, ["localize"]),
     "publish": (publish.run, ["splat", "soundscape"]),
 }
