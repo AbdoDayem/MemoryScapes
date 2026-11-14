@@ -16,6 +16,7 @@ import io
 import json
 import os
 import shutil
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol
@@ -41,6 +42,23 @@ class Storage(Protocol):
     def url_for(self, key: str, expires_s: int = 3600) -> str:
         """A URL another service (e.g. SATIE) can fetch the object from."""
         ...
+
+
+def _retry_locked(fn, attempts: int = 8, delay_s: float = 0.05):
+    """Run ``fn``, retrying while Windows reports the file as in use.
+
+    On Windows a file another process has open (the API streaming it to a viewer, an
+    indexer, antivirus) can't be replaced or deleted; it's usually free again within
+    moments. POSIX doesn't have the problem, so there the first attempt just succeeds.
+    """
+    for i in range(attempts):
+        try:
+            return fn()
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(delay_s * (2**i))
+    return None
 
 
 def _norm_prefix(prefix: str) -> str:
@@ -110,7 +128,7 @@ class LocalStorage:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_bytes(data)
-        tmp.replace(path)
+        _retry_locked(lambda: tmp.replace(path))
 
     def download(self, key: str, dest: Path) -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -121,13 +139,13 @@ class LocalStorage:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
         shutil.copyfile(src, tmp)
-        tmp.replace(path)
+        _retry_locked(lambda: tmp.replace(path))
 
     def delete_prefix(self, prefix: str) -> None:
         prefix = _norm_prefix(prefix)
         base = self._path(prefix)
         if base.is_dir():
-            shutil.rmtree(base)
+            _retry_locked(lambda: shutil.rmtree(base))
 
     def url_for(self, key: str, expires_s: int = 3600) -> str:
         return self._path(key).as_uri()

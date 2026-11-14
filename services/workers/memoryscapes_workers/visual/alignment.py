@@ -24,6 +24,9 @@ from dataclasses import asdict, dataclass
 import numpy as np
 
 UP = np.array([0.0, 1.0, 0.0])
+# Handheld capture is a walk: average speed and the range we accept from other cues.
+WALK_SPEED_MPS = 1.2
+PLAUSIBLE_SPEED_MPS = (0.2, 2.5)
 CV_TO_GL = np.diag([1.0, -1.0, -1.0])  # OpenCV camera axes -> OpenGL/three.js camera axes
 
 
@@ -131,10 +134,11 @@ class Alignment:
     scale: float
     translation: np.ndarray
     up_method: str  # "ground_plane" | "camera_up"
-    scale_method: str  # "eye_height" | "scene_depth" | "fixed"
+    scale_method: str  # "eye_height" | "scene_depth" | "walking_speed" | "fixed"
     scale_confidence: float  # 0..1
     eye_height_m: float
     ground_inlier_ratio: float | None = None
+    scale_note: str | None = None  # why a fallback scale was used
 
     def apply(self, pts: np.ndarray) -> np.ndarray:
         return self.scale * pts @ self.rotation.T + self.translation
@@ -165,19 +169,21 @@ def estimate_alignment(
     *,
     eye_height_m: float = 1.5,
     fixed_scale: float | None = None,
+    times: np.ndarray | None = None,
+    segments: np.ndarray | None = None,
 ) -> Alignment:
-    """Compute the SfM -> world similarity. Cameras must be in capture order."""
+    """Compute the SfM -> world similarity. Cameras must be in capture order.
+
+    With ``times`` (seconds, one per camera) the scale is sanity-checked against walking
+    pace: when the eye-height scale implies an implausible speed (the "ground" plane was
+    really distant structure, e.g. a reconstruction of far buildings with no floor), the
+    scale assumes a WALK_SPEED_MPS walk instead and the level comes from the cameras.
+    ``segments`` (one id per camera, e.g. the shot of an edited video) keeps the jumps
+    between segments out of the walking-speed estimate.
+    """
     cam_up = _normalize((cam_c2w_rot @ np.array([0.0, -1.0, 0.0])).mean(axis=0))
     plane = fit_ground_plane(points, cam_centers, cam_up)
-    up = plane.normal if plane is not None else cam_up
-
-    # Level the scene, then yaw so the first camera looks along -z.
-    r_level = rotation_between(up, UP)
-    fwd = r_level @ cam_c2w_rot[0] @ np.array([0.0, 0.0, 1.0])
-    fwd_h = np.array([fwd[0], 0.0, fwd[2]])
-    r = r_level
-    if np.linalg.norm(fwd_h) > 1e-3:
-        r = rotation_between(_normalize(fwd_h), np.array([0.0, 0.0, -1.0])) @ r_level
+    note = None
 
     if plane is not None:
         heights = (cam_centers - plane.point) @ plane.normal
@@ -188,18 +194,40 @@ def estimate_alignment(
         # Confident when many points lie on the plane and the camera height is steady.
         confidence = float(np.clip(0.4 + ratio, 0, 0.9) * np.clip(1.5 - 2 * spread, 0.2, 1.0))
         scale_method = "eye_height"
-        origin = cam_centers[0] - heights[0] * plane.normal
     else:
         # No floor: assume typical handheld subject distance (~3 m). Low confidence.
         d = np.linalg.norm(points[:, None, :] - cam_centers[None, :: max(1, len(cam_centers) // 50)], axis=2)
         scale = 3.0 / max(float(np.median(d.min(axis=1))), 1e-9)
         confidence, ratio, scale_method = 0.15, None, "scene_depth"
+
+    walk = _walking_speed_scale(cam_centers, times, segments)
+    if fixed_scale is None and walk is not None:
+        walk_scale, path_units, span = walk
+        speed = path_units * scale / span
+        if not (PLAUSIBLE_SPEED_MPS[0] <= speed <= PLAUSIBLE_SPEED_MPS[1]):
+            note = (f"{scale_method} scale implied {speed:.2f} m/s over {span:.0f} s; "
+                    f"assumed a {WALK_SPEED_MPS} m/s walk instead")
+            scale, confidence, scale_method = walk_scale, 0.3, "walking_speed"
+            plane = None  # its normal isn't trustworthy either: level from the cameras
+
+    up = plane.normal if plane is not None else cam_up
+    if plane is not None:
+        origin = cam_centers[0] - ((cam_centers[0] - plane.point) @ plane.normal) * plane.normal
+    else:
         origin = cam_centers[0] - (eye_height_m / scale) * up
 
     if fixed_scale is not None:
         scale, confidence, scale_method = fixed_scale, 1.0, "fixed"
         if plane is None:
             origin = cam_centers[0] - (eye_height_m / scale) * up
+
+    # Level the scene, then yaw so the first camera looks along -z.
+    r_level = rotation_between(up, UP)
+    fwd = r_level @ cam_c2w_rot[0] @ np.array([0.0, 0.0, 1.0])
+    fwd_h = np.array([fwd[0], 0.0, fwd[2]])
+    r = r_level
+    if np.linalg.norm(fwd_h) > 1e-3:
+        r = rotation_between(_normalize(fwd_h), np.array([0.0, 0.0, -1.0])) @ r_level
 
     t = -scale * r @ origin
     return Alignment(
@@ -210,8 +238,27 @@ def estimate_alignment(
         scale_method=scale_method,
         scale_confidence=round(confidence, 3),
         eye_height_m=eye_height_m,
-        ground_inlier_ratio=None if plane is None else round(float(ratio), 3),
+        ground_inlier_ratio=None if ratio is None else round(float(ratio), 3),
+        scale_note=note,
     )
+
+
+def _walking_speed_scale(cam_centers: np.ndarray, times: np.ndarray | None,
+                         segments: np.ndarray | None = None):
+    """(scale for a WALK_SPEED_MPS walk, path length in SfM units, seconds), if usable.
+    Path and time are summed within segments only."""
+    if times is None or len(times) != len(cam_centers) or len(times) < 3:
+        return None
+    seg = np.zeros(len(times), int) if segments is None else np.asarray(segments)
+    path = span = 0.0
+    for k in np.unique(seg):
+        m = seg == k
+        if m.sum() >= 2:
+            path += float(np.linalg.norm(np.diff(cam_centers[m], axis=0), axis=1).sum())
+            span += float(times[m][-1] - times[m][0])
+    if span < 3.0 or path <= 0:
+        return None
+    return WALK_SPEED_MPS * span / path, path, span
 
 
 def camera_to_threejs(c2w_cv: np.ndarray) -> tuple[list[float], list[float]]:

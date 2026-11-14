@@ -16,6 +16,7 @@ PROBE_IPHONE = {
             "creation_time": "2026-06-02T01:31:00.000000Z",
             "com.apple.quicktime.location.ISO6709": "+37.4275-122.1697+030.000/",
             "com.apple.quicktime.creationdate": "2026-06-01T18:30:00-0700",
+            "com.apple.quicktime.camera.focal_length.35mm_equivalent": "26",
         },
     },
     "streams": [
@@ -36,6 +37,8 @@ def test_parse_probe_iphone_portrait():
     # Apple creationdate (true capture time, with offset) wins over creation_time.
     assert info.captured_at == "2026-06-02T01:30:00Z"
     assert info.audio.channels == 4 and info.audio.sample_rate == 48000
+    assert info.focal_35mm == 26.0
+    assert parse_probe({"format": {"duration": "1"}, "streams": []}, "x.mp4").focal_35mm is None
 
 
 def test_parse_iso6709_variants():

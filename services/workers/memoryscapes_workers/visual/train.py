@@ -73,6 +73,14 @@ class TrainConfig(BaseModel):
     # Renders of the trained splat from every keyframe (splat/renders/), long side <= this.
     # 0 disables. Used by the debugger for side-by-side checks against the frames.
     render_max_side: int = 800
+    # Open (outdoor) scenes reach far beyond the camera path: buildings across a square,
+    # the sky. "auto": when the SfM points reach unbounded_ratio x the camera spread. Then
+    # a sky dome is added (the sky has no SfM points) and gaussians aren't pruned for
+    # their 3D size, which is relative to the camera spread and would delete everything
+    # distant; they're pruned by their size on screen instead.
+    unbounded: Literal["auto", "on", "off"] = "auto"
+    unbounded_ratio: float = 5.0
+    sky_dome_points: int = 4000
 
 
 # Overrides applied per trainer unless the stage config sets the key explicitly.
@@ -254,9 +262,18 @@ class GaussianTrainer:
         viewmats = torch.tensor(scene.w2c, dtype=torch.float32, device=dev)
         scene_scale = scene.scene_scale
 
-        pts = torch.tensor(scene.points, dtype=torch.float32, device=dev)
+        far = float(np.percentile(np.linalg.norm(scene.points - scene.cam_centers.mean(axis=0), axis=1), 95))
+        unbounded = cfg.unbounded == "on" or (cfg.unbounded == "auto" and far > cfg.unbounded_ratio * scene_scale)
+        init_pts, init_cols, dome_radius = scene.points, scene.colors, None
+        if unbounded and cfg.sky_dome_points > 0:
+            dome, dome_cols, dome_radius = sky_dome(scene, images, Ks, cfg.sky_dome_points, far)
+            init_pts = np.concatenate([scene.points, dome])
+            init_cols = np.concatenate([scene.colors, dome_cols])
+            log.info("open scene (points reach %.0f m, cameras span %.1f m): sky dome of %d at %.0f m",
+                     far, scene_scale, len(dome), dome_radius)
+        pts = torch.tensor(init_pts, dtype=torch.float32, device=dev)
         knn = _knn_mean_dist_torch(pts, 3).cpu().numpy()
-        init = init_from_points(scene.points, scene.colors, cfg.sh_degree,
+        init = init_from_points(init_pts, init_cols, cfg.sh_degree,
                                 opacity=0.5 if mcmc else 0.1, scale_mult=0.1 if mcmc else 1.0, knn=knn)
         n = len(init)
 
@@ -286,7 +303,11 @@ class GaussianTrainer:
             strategy = DefaultStrategy(
                 refine_start_iter=cfg.refine_start_iter, refine_stop_iter=cfg.steps // 2,
                 refine_every=cfg.refine_every,
-                reset_every=cfg.reset_every or min(3000, max(cfg.steps // 3, 500)))
+                reset_every=cfg.reset_every or min(3000, max(cfg.steps // 3, 500)),
+                # Open scenes: prune by size on screen (> 15% of the image) instead of
+                # in metres, which keeps far buildings and still kills huge floaters.
+                prune_scale3d=1e6 if unbounded else 0.1,
+                refine_scale2d_stop_iter=cfg.steps if unbounded else 0)
             state = strategy.initialize_state(scene_scale=scene_scale)
         strategy.check_sanity(params, optimizers)
 
@@ -373,8 +394,35 @@ class GaussianTrainer:
             "psnr": round(psnr, 2), "psnr_split": "holdout" if cfg.holdout_every > 0 else "train",
             "image_size": list(gts[0].shape[1::-1]), "train_images": int(len(train_idx)),
             "seconds": round(time.time() - t0, 1), "scene_scale": round(scene_scale, 3),
+            "unbounded": bool(unbounded),
+            "sky_dome_radius_m": None if dome_radius is None else round(dome_radius, 1),
             "gpu": torch.cuda.get_device_name(0) if dev.type == "cuda" else str(dev),
         })
+
+
+def sky_dome(scene: SceneData, images: list[np.ndarray], Ks: np.ndarray, n: int,
+             far: float) -> tuple[np.ndarray, np.ndarray, float]:
+    """Points on a far hemisphere (down to 15 degrees below the horizon) around the
+    cameras, coloured from the frames they project into. World frame: +y up."""
+    center = scene.cam_centers.mean(axis=0)
+    radius = max(3.0 * far, 50.0)
+    i = np.arange(n) + 0.5
+    y = 1.0 - (i / n) * (1.0 + np.sin(np.radians(15.0)))
+    phi = i * np.pi * (3.0 - np.sqrt(5.0))  # Fibonacci spiral: even coverage
+    ring = np.sqrt(np.maximum(0.0, 1.0 - y * y))
+    pts = center + radius * np.stack([ring * np.cos(phi), y, ring * np.sin(phi)], axis=-1)
+    acc, cnt = np.zeros((n, 3)), np.zeros(n)
+    for k in range(0, len(images), max(1, len(images) // 12)):
+        img, K, w2c = images[k], Ks[k], scene.w2c[k]
+        h, w = img.shape[:2]
+        pc = pts @ w2c[:3, :3].T + w2c[:3, 3]
+        uv = (pc @ K.T)[:, :2] / np.maximum(pc[:, 2:3], 1e-9)
+        ok = (pc[:, 2] > 0) & (uv[:, 0] >= 0) & (uv[:, 0] < w - 1) & (uv[:, 1] >= 0) & (uv[:, 1] < h - 1)
+        acc[ok] += img[uv[ok, 1].astype(int), uv[ok, 0].astype(int)] / 255.0
+        cnt[ok] += 1
+    sky_blue = np.array([0.72, 0.8, 0.9])
+    cols = np.where(cnt[:, None] > 0, acc / np.maximum(cnt[:, None], 1), sky_blue)
+    return pts.astype(np.float32), cols.astype(np.float32), float(radius)
 
 
 def _load_images(scene: SceneData, max_side: int) -> tuple[list[np.ndarray], np.ndarray]:

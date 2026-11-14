@@ -24,6 +24,7 @@ class FrameStats:
     sharpness: np.ndarray  # [n]
     motion: np.ndarray  # [n], motion[0] = 0
     tracked: np.ndarray  # [n] number of flow tracks used (0 = flow failed)
+    thumbs: np.ndarray | None = None  # [n, h, w] tiny grayscale frames (shot detection)
 
 
 @dataclass
@@ -38,9 +39,12 @@ def analyze(frames: Iterable[np.ndarray]) -> FrameStats:
     """Compute sharpness and inter-frame motion for grayscale uint8 frames."""
     import cv2
 
-    sharp, motion, tracked = [], [], []
+    from memoryscapes_workers.visual.shots import thumbnail
+
+    sharp, motion, tracked, thumbs = [], [], [], []
     prev = None
     for gray in frames:
+        thumbs.append(thumbnail(gray))
         sharp.append(float(cv2.Laplacian(gray, cv2.CV_64F).var()))
         if prev is None:
             motion.append(0.0)
@@ -50,7 +54,8 @@ def analyze(frames: Iterable[np.ndarray]) -> FrameStats:
             motion.append(m)
             tracked.append(n)
         prev = gray
-    return FrameStats(np.array(sharp), np.array(motion), np.array(tracked))
+    return FrameStats(np.array(sharp), np.array(motion), np.array(tracked),
+                      np.array(thumbs) if thumbs else None)
 
 
 def _flow(prev: np.ndarray, cur: np.ndarray) -> tuple[float, int]:
@@ -85,7 +90,9 @@ def select(
     max_keyframes: int,
     blur_reject: float,
     sharpness_window: int,
+    exclude: np.ndarray | None = None,
 ) -> Selection:
+    """``exclude``: candidates never to pick (e.g. the frames of a cross-dissolve)."""
     n = len(stats.sharpness)
     warnings: list[str] = []
     motion = stats.motion.copy()
@@ -115,6 +122,8 @@ def select(
     rejected = 0
     for b in range(k):
         members = np.flatnonzero(bins == b)
+        if exclude is not None:
+            members = members[~exclude[members]]
         if len(members) == 0:
             continue
         best = members[np.argmax(rel[members])]
