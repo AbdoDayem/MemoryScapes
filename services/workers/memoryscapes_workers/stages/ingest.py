@@ -32,12 +32,17 @@ from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.stagekit import UPLOAD_PREFIX, StageError, StageIO, run_stage, write_json
 
 STAGE = "ingest"
-VERSION = "3"  # 2: audio-stage contract outputs (audio.wav, meta.json); 3: separate audio aligned
+VERSION = "4"  # 2: audio contract (audio.wav, meta.json); 3: separate audio aligned;
+#                4: focal metadata, keyframe floor capped per second
 
 
 class IngestConfig(BaseModel):
     max_keyframes: int = 400
     min_keyframes: int = 150  # short clips can yield fewer (one per candidate at most)
+    # Cap on that floor, per second of video. Keyframes packed closer than this give
+    # neighbouring pairs too little parallax and COLMAP splits the path (a 28 s walk:
+    # 150 keyframes -> 10 pieces, 48 -> one). Motion-based spacing can still add more.
+    max_min_keyframes_per_s: float = 2.0
     # Desired camera motion between keyframes: median optical flow / image diagonal.
     target_step: float = Field(0.035, gt=0)
     # Candidates decoded per keyframe slot, before selection.
@@ -174,7 +179,7 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
     sel = keyframes.select(
         stats,
         target_step=cfg.target_step,
-        min_keyframes=cfg.min_keyframes,
+        min_keyframes=min(cfg.min_keyframes, max(10, int(cfg.max_min_keyframes_per_s * info.duration_s))),
         max_keyframes=cfg.max_keyframes,
         blur_reject=cfg.blur_reject,
         sharpness_window=max(3, int(round(sample_fps))),
@@ -219,7 +224,7 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
                    "duration_s": info.duration_s, "size_bytes": info.size_bytes},
         "video": {k: v for k, v in info.to_dict().items()
                   if k in ("codec", "width", "height", "display_width", "display_height",
-                           "rotation", "fps", "num_frames")},
+                           "rotation", "fps", "num_frames", "focal_35mm")},
         "audio": audio_meta,
         "geo": dict(zip(("lat", "lon", "alt"), info.geo, strict=True)) if info.geo else None,
         "captured_at": info.captured_at,
@@ -227,6 +232,10 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
             "count": len(frames_meta),
             "width": o_size[0],
             "height": o_size[1],
+            # Focal length in keyframe pixels, from the 35 mm equivalent (which refers to
+            # the 43.27 mm diagonal of a 36x24 frame); None when the file doesn't say.
+            "focal_px": (round(info.focal_35mm * math.hypot(*o_size) / 43.27, 1)
+                         if info.focal_35mm else None),
             "sample_fps": round(sample_fps, 4),
             "candidates": n_candidates,
             "total_motion": round(sel.total_motion, 4),

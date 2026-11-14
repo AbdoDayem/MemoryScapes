@@ -31,7 +31,7 @@ def fake_pycolmap(calls, global_result, incremental_result):
         Device=SimpleNamespace(auto="auto", cpu="cpu"),
         CameraMode=SimpleNamespace(SINGLE="single"),
         FeatureExtractionOptions=lambda: SimpleNamespace(sift=SimpleNamespace(max_num_features=0)),
-        ImageReaderOptions=lambda **_k: None,
+        ImageReaderOptions=lambda **k: SimpleNamespace(**k),
         extract_features=lambda *_a, **_k: None,
         SequentialPairingOptions=lambda: SimpleNamespace(overlap=0, quadratic_overlap=False),
         match_sequential=lambda *_a, **_k: None,
@@ -44,7 +44,16 @@ def run_sfm(monkeypatch, ctx, tmp_path, global_result, incremental_result, n_ima
     calls = []
     monkeypatch.setitem(sys.modules, "pycolmap", fake_pycolmap(calls, global_result, incremental_result))
     io = StageIO(ctx=ctx, stage="poses", work_dir=tmp_path, out_dir=tmp_path / "out")
-    return calls, poses._sfm(io, poses.PosesConfig(), tmp_path, n_images)
+    return calls, poses._sfm(io, poses.PosesConfig(), tmp_path, n_images, 0.8)
+
+
+def test_focal_prior_prefers_video_metadata():
+    cfg = poses.PosesConfig()
+    assert poses.focal_prior({"width": 1600, "height": 900, "focal_px": None}, cfg) == \
+        {"source": "default", "factor": 0.8}
+    # iPhone main camera: 26 mm equivalent -> 26 * hypot(1600, 900) / 43.27 = 1103 px.
+    got = poses.focal_prior({"width": 1600, "height": 900, "focal_px": 1103.0}, cfg)
+    assert got["source"] == "video metadata" and got["factor"] == pytest.approx(0.689, abs=1e-3)
 
 
 def test_global_success_needs_no_fallback(monkeypatch, ctx, tmp_path):

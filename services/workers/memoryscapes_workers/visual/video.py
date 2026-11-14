@@ -50,6 +50,8 @@ class MediaInfo:
     audio: AudioStreamInfo | None = None
     geo: tuple[float, float, float | None] | None = None  # lat, lon, alt
     captured_at: str | None = None  # ISO 8601 UTC
+    # Lens focal length as a 35 mm equivalent (iPhone .mov metadata), if recorded.
+    focal_35mm: float | None = None
 
     @property
     def display_size(self) -> tuple[int, int]:
@@ -132,6 +134,16 @@ def parse_probe(data: dict, path: str = "") -> MediaInfo:
         if key in tags and (captured := _parse_time(tags[key])):
             break
 
+    focal = None
+    for key in ("com.apple.quicktime.camera.focal_length.35mm_equivalent", "focal_length_35mm"):
+        try:
+            focal = float(tags[key]) if key in tags else None
+        except ValueError:
+            focal = None
+        if focal and 5 <= focal <= 300:
+            break
+        focal = None
+
     duration = float(fmt.get("duration") or (video or audio or {}).get("duration") or 0.0)
     info = MediaInfo(
         path=path,
@@ -140,6 +152,7 @@ def parse_probe(data: dict, path: str = "") -> MediaInfo:
         size_bytes=int(fmt.get("size") or 0),
         geo=geo,
         captured_at=captured,
+        focal_35mm=focal,
     )
     if video:
         info.codec = video.get("codec_name")

@@ -40,7 +40,8 @@ from memoryscapes_workers.stagekit import StageError, StageIO, run_stage, write_
 
 STAGE = "poses"
 log = logging.getLogger("memoryscapes.poses")
-VERSION = "3"  # 2: audio-stage contract (cameras.json, points3d.npy); 3: points3d_rgb.npy
+VERSION = "4"  # 2: audio contract; 3: points3d_rgb.npy; 4: focal prior, mapper fallback,
+#                sky masks, walking-speed scale check
 
 CAPTURE_HINT = (
     "Move slowly and steadily, walk through the space or orbit the subject instead of "
@@ -51,6 +52,13 @@ CAPTURE_HINT = (
 class PosesConfig(BaseModel):
     mapper: Literal["global", "incremental"] = "global"
     camera_model: Literal["SIMPLE_RADIAL", "OPENCV", "PINHOLE", "SIMPLE_PINHOLE"] = "SIMPLE_RADIAL"
+    # Starting focal length x the long image side when the video doesn't record one.
+    # Extracted frames carry no EXIF, and COLMAP's own default (1.2, about 45 degrees) is
+    # far narrower than phone cameras (about 0.7-0.8): on wide footage it fails to
+    # initialize or breaks the path into pieces. Bundle adjustment refines it either way.
+    focal_length_factor: float = Field(0.8, gt=0.2, lt=3)
+    # Ignore features on the sky (clouds have no parallax and drift); see visual/sky_mask.py.
+    sky_mask: bool = True
     max_num_features: int = 8192
     matcher: Literal["sequential", "exhaustive"] = "sequential"
     sequential_overlap: int = 15
@@ -74,7 +82,7 @@ def _largest(recs: dict) -> object | None:
     return max(recs.values(), key=lambda r: r.num_reg_images())
 
 
-def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int):
+def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int, focal_factor: float):
     import pycolmap
 
     work = io.work_dir / "colmap"
@@ -84,10 +92,18 @@ def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int):
 
     extraction = pycolmap.FeatureExtractionOptions()
     extraction.sift.max_num_features = cfg.max_num_features
+    reader = pycolmap.ImageReaderOptions(camera_model=cfg.camera_model,
+                                         default_focal_length_factor=focal_factor)
+    if cfg.sky_mask:
+        from memoryscapes_workers.visual.sky_mask import write_masks
+
+        sky = write_masks(image_dir, work / "masks")
+        reader.mask_path = str(work / "masks")
+        log.info("[%s] sky masks: %.0f%% of pixels on average", STAGE, 100 * sky)
     pycolmap.extract_features(
         db, image_dir,
         camera_mode=pycolmap.CameraMode.SINGLE,
-        reader_options=pycolmap.ImageReaderOptions(camera_model=cfg.camera_model),
+        reader_options=reader,
         extraction_options=extraction,
         device=device,
     )
@@ -139,6 +155,14 @@ def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int):
     return rec, work, used
 
 
+def focal_prior(keyframes: dict, cfg: PosesConfig) -> dict:
+    """Starting focal length for SfM, as a factor of the long image side."""
+    if keyframes.get("focal_px"):
+        long_side = max(keyframes["width"], keyframes["height"])
+        return {"source": "video metadata", "factor": round(keyframes["focal_px"] / long_side, 4)}
+    return {"source": "default", "factor": cfg.focal_length_factor}
+
+
 def _poses(io: StageIO, cfg: PosesConfig) -> dict:
     import pycolmap
 
@@ -150,14 +174,16 @@ def _poses(io: StageIO, cfg: PosesConfig) -> dict:
     image_dir = ingest_dir / "frames"
     n_images = len(frame_times)
 
-    rec, work, mapper_used = _sfm(io, cfg, image_dir, n_images)
+    focal = focal_prior(meta["keyframes"], cfg)
+    rec, work, mapper_used = _sfm(io, cfg, image_dir, n_images, focal["factor"])
 
     # ---- gravity, metric scale, origin
     images = sorted((im for im in rec.images.values() if im.has_pose), key=lambda im: im.name)
     centers = np.array([im.projection_center() for im in images])
     rots = np.array([im.cam_from_world().rotation.matrix().T for im in images])
     pts = np.array([p.xyz for p in rec.points3D.values()])
-    align = al.estimate_alignment(centers, rots, pts, eye_height_m=cfg.eye_height_m,
+    times = np.array([frame_times[im.name] for im in images], float)
+    align = al.estimate_alignment(centers, rots, pts, eye_height_m=cfg.eye_height_m, times=times,
                                   fixed_scale=cfg.fixed_scale)
 
     # ---- undistort, then move the undistorted model into the world frame
@@ -220,12 +246,14 @@ def _poses(io: StageIO, cfg: PosesConfig) -> dict:
         "path_length_m": round(float(np.linalg.norm(np.diff([c[:3, 3] for c in c2ws], axis=0), axis=1).sum()), 2),
         "scene_extent_m": np.round(np.percentile(world_pts, 98, axis=0) - np.percentile(world_pts, 2, axis=0), 2).tolist(),
     }
-    write_json(out / "alignment.json", {**align.to_dict(), "stats": stats, "mapper": mapper_used})
+    write_json(out / "alignment.json", {**align.to_dict(), "stats": stats, "mapper": mapper_used,
+                                        "focal_prior": focal})
 
     warnings = []
     if align.scale_confidence < 0.4:
         warnings.append(
             f"Metric scale is a rough guess ({align.scale_method}); distances may be off."
+            + (f" {align.scale_note[0].upper()}{align.scale_note[1:]}." if align.scale_note else "")
         )
     io.progress(1.0, "done")
     return {
