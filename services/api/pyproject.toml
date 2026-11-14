@@ -16,3 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27"]
+
+[tool.setuptools.packages.find]
+# Explicit, so local folders like data/ (the SQLite database) aren't picked up as packages.
+include = ["app*"]
