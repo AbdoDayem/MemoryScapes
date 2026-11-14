@@ -10,18 +10,24 @@ dependencies = [
   "pydantic>=2.7",
   "boto3>=1.34",
   "jsonschema>=4.22",
+  "pillow>=10",
 ]
 
 [project.scripts]
 memoryscapes-worker = "memoryscapes_workers.cli:main"
 
 [project.optional-dependencies]
-# Heavy GPU / ML dependencies are split out so the API and CI stay light.
-# AudioSep is not on PyPI: clone https://github.com/Audio-AGI/AudioSep and add it to PYTHONPATH.
+# Heavy GPU / ML dependencies are split out so the API and CI stay light. CPU-only torch:
+#   pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cpu
+# AudioSep is not on PyPI: see README "Models" (clone into <repo>/.models/AudioSep).
 # ingest/poses/splat also need the ffmpeg binary. gsplat's kernels need CUDA; on a Mac
 # the splat stage uses its pure-PyTorch rasterizer instead (trainer="torch").
-visual = ["gsplat>=1.5", "torch", "opencv-python", "pycolmap>=4.2", "transformers>=4.44", "pillow"]
-audio = ["torch", "torchaudio", "demucs>=4.0", "transformers>=4.44"]
+visual = ["gsplat>=1.5", "torch", "opencv-python", "pycolmap>=4.2", "transformers>=4.44,<5", "pillow"]
+audio = [
+  "torch", "torchaudio", "torchvision", "demucs>=4.0", "transformers>=4.44,<5",
+  # AudioSep's inference path imports these
+  "lightning", "librosa", "torchlibrosa", "ftfy", "regex", "braceexpand", "webdataset", "h5py", "pandas", "pyyaml", "scikit-learn", "timm", "wget",
+]
 satie = ["mcp>=1.9"]
 dev = ["pytest>=8"]
 

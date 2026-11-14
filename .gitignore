@@ -30,3 +30,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.egg-info/
+
+# Model checkouts and weights (AudioSep etc.)
+.models/

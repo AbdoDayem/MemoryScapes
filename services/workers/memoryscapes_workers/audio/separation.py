@@ -16,6 +16,48 @@ from memoryscapes_workers.audio.dsp import fit_length, process_in_chunks, resamp
 from memoryscapes_workers.audio.vocabulary import SoundClass
 
 
+def _checkpoint_safe_globals() -> list:
+    """NumPy types AudioSep's Lightning checkpoints pickle alongside the weights.
+
+    torch >= 2.6 loads checkpoints with weights_only=True, which refuses them. Allowing
+    just these types keeps the restricted unpickler on, instead of weights_only=False,
+    which would run arbitrary code from the file.
+    """
+    import numpy as np
+
+    out: list = [np.dtype]
+    try:
+        from numpy._core.multiarray import scalar
+    except ImportError:  # numpy < 2
+        from numpy.core.multiarray import scalar
+    # The checkpoints were pickled with numpy 1.x, so they name it numpy.core...; numpy 2
+    # moved it to numpy._core. Register it under both names.
+    out += [scalar, (scalar, "numpy.core.multiarray.scalar")]
+    for t in ("float64", "float32", "int64", "int32", "bool"):
+        cls = type(np.dtype(t))
+        out += [cls, (cls, f"numpy.dtype[{t}]")]
+    return out
+
+
+def _drop_stale_clap_keys() -> None:
+    """transformers >= 4.31 no longer stores RoBERTa's position_ids buffer, so AudioSep's
+    CLAP checkpoint carries one key the model doesn't have. Strip it when AudioSep loads
+    the checkpoint, without editing the AudioSep checkout."""
+    import models.CLAP.open_clip.factory as factory  # AudioSep's vendored open_clip
+
+    if getattr(factory.load_state_dict, "_memoryscapes_patched", False):
+        return
+    original = factory.load_state_dict
+
+    def load_state_dict(*args, **kwargs):
+        state = original(*args, **kwargs)
+        state.pop("text_branch.embeddings.position_ids", None)
+        return state
+
+    load_state_dict._memoryscapes_patched = True  # type: ignore[attr-defined]
+    factory.load_state_dict = load_state_dict
+
+
 class Separator(Protocol):
     def separate(self, mono: np.ndarray, sr: int, classes: Sequence[SoundClass]) -> dict[str, np.ndarray]: ...
 
@@ -37,23 +79,41 @@ class AudioSepSeparator:
         device: str | None = None,
         chunk_s: float = 10.0,
         overlap_s: float = 1.0,
+        repo_dir: str | None = None,
     ) -> None:
         self.config_yaml = config_yaml
         self.checkpoint_path = checkpoint_path
         self.device = device
         self.chunk_s = chunk_s
         self.overlap_s = overlap_s
+        self.repo_dir = repo_dir
         self._model = None
 
     def _load(self):
         if self._model is None:
-            import torch
-            from pipeline import build_audiosep  # AudioSep repo root
+            import contextlib
+            import os
+            import sys
 
-            self.device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
-            self._model = build_audiosep(
-                config_yaml=self.config_yaml, checkpoint_path=self.checkpoint_path, device=self.device
-            )
+            import torch
+
+            # AudioSep resolves its config and its CLAP text-encoder checkpoint relative
+            # to the repo root, so import and build from inside it.
+            repo = self.repo_dir
+            cwd = contextlib.chdir(repo) if repo else contextlib.nullcontext()
+            if repo and repo not in sys.path:
+                sys.path.insert(0, repo)
+            with cwd, torch.serialization.safe_globals(_checkpoint_safe_globals()):
+                # before importing pipeline: models/audiosep.py builds a CLAP encoder as a
+                # default argument, i.e. at import time
+                _drop_stale_clap_keys()
+                from pipeline import build_audiosep  # AudioSep repo root
+
+                self.device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
+                self._model = build_audiosep(
+                    config_yaml=self.config_yaml, checkpoint_path=self.checkpoint_path, device=self.device
+                )
+            os.environ.setdefault("AUDIOSEP_LOADED_FROM", repo or os.getcwd())
         return self._model
 
     def separate(self, mono: np.ndarray, sr: int, classes: Sequence[SoundClass]) -> dict[str, np.ndarray]:

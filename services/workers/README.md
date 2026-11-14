@@ -69,9 +69,31 @@ GPU, otherwise the PyTorch rasterizer on Apple Silicon, otherwise `points`.
 .venv/Scripts/python examples/run_example.py park_walk  # one
 ```
 
-Each run writes the full stage output, so you can listen to `ingest/audio.wav` and `separate/stems/*.wav`. It also writes `report.md` (per-sound error, method, confidence, verdict) and `map.svg` (a top-down view of the true and estimated positions). The script exits non-zero if anything is placed confidently in the wrong spot. `tests/test_examples.py` runs the same scenes as regression tests, and CI (`.github/workflows/workers.yml`) runs both on every PR.
+Each run writes the full stage output, so you can listen to `ingest/audio.wav` and `separate/stems/*.wav`. It also writes stand-ins for the splat pipeline per [docs/SPLAT_OUTPUTS.md](../../docs/SPLAT_OUTPUTS.md): rendered PNG keyframes, a 3DGS `point_cloud.ply`, training metrics, splat renders, and `debug/truth.json`. That's everything the debugger (`tools/debugger`) needs. `hard_mode`'s splat is deliberately at half scale, so the debugger has an alignment failure to show. It also writes `report.md` (per-sound error, method, confidence, verdict) and `map.svg` (a top-down view of the true and estimated positions). The script exits non-zero if anything is placed confidently in the wrong spot. `tests/test_examples.py` runs the same scenes as regression tests, and CI (`.github/workflows/workers.yml`) runs both on every PR.
 
-AudioSep isn't on PyPI. Clone [Audio-AGI/AudioSep](https://github.com/Audio-AGI/AudioSep), download its checkpoint, put the repo on `PYTHONPATH`, and set `AUDIOSEP_CONFIG` and `AUDIOSEP_CHECKPOINT`.
+## Running on a real video
+
+```bash
+python -m memoryscapes_workers.run --root <data root> --memory <id> [--max-seconds 30] [--no-detector] [--only ingest,poses]
+```
+
+This is the debugger's upload runner: the whole DAG for one memory, with progress the UI can show. It expects the uploaded files in `<root>/<id>/upload/` (the debugger's upload page puts them there, alongside a `meta.json` the stages ignore). Each stage runs in its own process through `memoryscapes-worker run --in-process --result-file`, for the OpenMP reason in `cli.py`, and with `--force`, because a re-upload replaces files under the same names. Stages run in DAG order. Unimplemented stages (publish) are marked skipped, and stages whose dependencies failed are marked blocked, while the others carry on. Progress goes to `<id>/job/status.json`, and the full log to `<id>/job/log.txt`.
+
+The CPU defaults are set in `run.stage_config`: at most `--max-keyframes 120` keyframes and SIFT on the CPU. The splat trainer is `auto`, so on a machine without CUDA it uses `points`.
+
+`examples/make_video.py park_walk out.mp4` renders an example memory to a video with stereo sound and known source positions, for testing the upload path.
+
+## Models
+
+Each runs on the CPU, so there's no GPU needed. Weights download on first use, except AudioSep's.
+
+| Model | Install |
+|---|---|
+| CLAP, Grounding DINO | `transformers` (Hugging Face cache) |
+| HTDemucs | `demucs` |
+| AudioSep | Not on PyPI. Clone [Audio-AGI/AudioSep](https://github.com/Audio-AGI/AudioSep) to `<repo>/.models/AudioSep`, and put `audiosep_base_4M_steps.ckpt` and `music_speech_audioset_epoch_15_esc_89.98.pt` from the [AudioSep Space](https://huggingface.co/spaces/Audio-AGI/AudioSep/tree/main/checkpoint) in its `checkpoint/` folder (3.6 GB). Set `AUDIOSEP_DIR` if it lives elsewhere. |
+
+Two compatibility shims in `audio/separation.py` let AudioSep run on current torch and transformers without editing its code. One allowlists the NumPy types its checkpoints pickle, so they load under `weights_only=True` instead of turning that safety off. The other drops a stale `position_ids` key from its CLAP checkpoint.
 
 ## Audio stages: data contracts
 

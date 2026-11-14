@@ -6,7 +6,8 @@ Model weights load lazily on first use, so importing this module is cheap.
     AUDIO_TAGGER       clap (default)
     SEPARATOR          audiosep (default)
     SEPARATOR_SPEECH   demucs (default) | audiosep
-    AUDIOSEP_CONFIG, AUDIOSEP_CHECKPOINT   paths inside the AudioSep checkout
+    AUDIOSEP_DIR       the AudioSep checkout (holds config/ and checkpoint/)
+    AUDIOSEP_CONFIG, AUDIOSEP_CHECKPOINT   paths inside that checkout
     DETECTOR           grounding-dino (default) | none
 """
 
@@ -38,6 +39,7 @@ def get_separator() -> Separator:
     default = AudioSepSeparator(
         config_yaml=os.environ.get("AUDIOSEP_CONFIG", "config/audiosep_base.yaml"),
         checkpoint_path=os.environ.get("AUDIOSEP_CHECKPOINT", "checkpoint/audiosep_base_4M_steps.ckpt"),
+        repo_dir=os.environ.get("AUDIOSEP_DIR"),
     )
     speech = os.environ.get("SEPARATOR_SPEECH", "demucs")
     by_kind = {"speech": DemucsVocalsSeparator()} if speech == "demucs" else {}

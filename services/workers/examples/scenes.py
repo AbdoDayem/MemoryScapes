@@ -186,6 +186,10 @@ class Conditions:
     detector_miss_rate: float = 0.1
     detector_false_rate: float = 0.05  # false boxes per frame per prompt
     box_jitter: float = 0.1  # fraction of box size
+    # how the (separately built) splat relates to the poses' world frame; anything but
+    # scale 1 / offset 0 is an integration bug the debugger should flag
+    splat_scale: float = 1.0
+    splat_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 @dataclass
@@ -252,7 +256,8 @@ SCENARIOS: dict[str, Scenario] = {
         Scenario(
             "hard_mode",
             "The cafe again with everything going wrong: heavy leakage, missed and false detections, "
-            "a false tag, reverb, noise, and the wrong mic spacing in the metadata.",
+            "a false tag, reverb, noise, the wrong mic spacing in the metadata, and a splat "
+            "that came back at half scale.",
             12.0,
             [
                 Source("speech", (1.2, 1.2, 2.0), -24, size_m=0.8),
@@ -271,6 +276,7 @@ SCENARIOS: dict[str, Scenario] = {
                 detector_miss_rate=0.5,
                 detector_false_rate=0.3,
                 box_jitter=0.3,
+                splat_scale=0.5,
             ),
             seed=4,
         ),
@@ -382,6 +388,7 @@ class Rendered:
     recording: np.ndarray  # (C, N) as the phone recorded it
     contributions: dict[str, np.ndarray]  # label -> (C, N) what each source contributed
     sample_rate: int = SR
+    image_lookup: dict[bytes, str] = field(default_factory=dict)  # frame image bytes -> frame id
 
 
 def render(scenario: Scenario) -> Rendered:
@@ -413,19 +420,32 @@ def render(scenario: Scenario) -> Rendered:
     return Rendered(scenario, cams, scene_points(scenario, rng), recording.astype(np.float32), contributions)
 
 
-def write_inputs(ctx: StageContext, r: Rendered) -> None:
-    """Writes what ingest + poses will produce for this memory."""
+def write_inputs(ctx: StageContext, r: Rendered, images: bool = False, splat: bool = False) -> None:
+    """Writes what ingest + poses will produce for this memory.
+
+    images=True renders real PNG keyframes (slower); otherwise each frame "image" is
+    just its id, which is all the oracle detector needs. splat=True also writes the
+    splat pipeline's outputs (docs/SPLAT_OUTPUTS.md) and debug/truth.json.
+    """
+    import splat_fake
+
     s, c = ctx.storage, r.scenario.conditions
     write_wav(s, ctx.key("ingest", "audio.wav"), r.recording, r.sample_rate)
     mic = {"channels": int(r.recording.shape[0]), "layout": c.layout}
     if c.reported_spacing_m is not None and c.layout == "stereo":
         mic["spacing_m"] = c.reported_spacing_m
     write_json(s, ctx.key("ingest", "meta.json"), {"mic": mic, "scenario": r.scenario.name})
-    for cam in r.cameras:
-        cam.image_key = ctx.key("ingest", f"frames/{cam.frame_id}.jpg")
-        s.write_bytes(cam.image_key, cam.frame_id.encode())  # oracle detector reads the id
+    if images:
+        r.image_lookup = splat_fake.write_frames(ctx, r)
+    else:
+        for cam in r.cameras:
+            cam.image_key = ctx.key("ingest", f"frames/{cam.frame_id}.jpg")
+            s.write_bytes(cam.image_key, cam.frame_id.encode())  # oracle detector reads the id
     write_json(s, ctx.key("poses", "cameras.json"), [cam.to_json() for cam in r.cameras])
     write_npy(s, ctx.key("poses", "points3d.npy"), r.points)
+    if splat:
+        splat_fake.write_splat(ctx, r, scale=c.splat_scale, offset=c.splat_offset)
+        splat_fake.write_truth(ctx, r, c.splat_scale, c.splat_offset)
 
 
 # ---------------------------------------------------------------- oracle backends
@@ -477,7 +497,8 @@ class OracleDetector:
         self.rng = np.random.default_rng(r.scenario.seed + 200)
 
     def detect(self, image_bytes, prompt):
-        cam = self.cams[image_bytes.decode()]
+        frame_id = self.r.image_lookup.get(image_bytes) or image_bytes.decode()
+        cam = self.cams[frame_id]
         out = []
         for s in self.r.scenario.sources:
             cls = BY_LABEL[s.label]
