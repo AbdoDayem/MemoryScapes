@@ -4,7 +4,7 @@ MemoryScapes turns a video (or panoramas) plus an audio recording into a walkabl
 
 ## Status
 
-Mostly a scaffold: API endpoints return `501`. In the workers, the audio stages (`separate`, `localize`, `soundscape`) are implemented and tested. The other stages raise `NotImplementedError`. Follow the build phases in `docs/ARCHITECTURE.md` § 9. The MVP is video → COLMAP → gsplat → web viewer, with private memories only. Stage data contracts are in `services/workers/README.md`.
+Mostly a scaffold: API endpoints return `501`. In the workers, the visual stages (`ingest`, `poses`, `splat`) and the audio stages (`separate`, `localize`, `soundscape`) are implemented and tested; `publish` raises `NotImplementedError`. Follow the build phases in `docs/ARCHITECTURE.md` § 9. The MVP is video → COLMAP → gsplat → web viewer, with private memories only. Stage data contracts are in `services/workers/README.md`.
 
 ## Layout
 
@@ -27,6 +27,7 @@ cd services/api && pip install -e ".[dev]" && uvicorn app.main:app --reload
 cd services/workers && python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev]"   # core + tests
 cd services/workers && .venv/Scripts/python -m pytest                                            # worker tests
 cd services/workers && pip install -e ".[audio,visual,satie]"   # model backends + SATIE MCP client
+cd services/workers && memoryscapes-worker demo                  # synthetic video -> ingest -> poses -> splat (local)
 ```
 
 ## Rules for working in this repo
