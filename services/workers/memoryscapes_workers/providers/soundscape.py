@@ -197,7 +197,7 @@ def build_brief(request: SoundscapeRequest, cfg: SatieConfig) -> str:
     for s in placed:
         spl = f", about {s.source.level_db_at_1m:.0f} dBFS at 1 m" if s.source.level_db_at_1m is not None else ""
         lines.append(f"- host {s.source.id}: clip {s.clip} ({s.source.label}{spl})")
-    lines += ["", "Ambient bed (loop as `bed` in room memory):", "- clip memory/ambient (the rest of the recording)"]
+    lines += ["", "Ambient bed (loop each as `bed`, heard everywhere):", "- clip memory/ambient (the rest of the recording)"]
     for s in diffuse:
         lines.append(f"- clip {s.clip} ({s.source.label}, no single location)")
     lines.append("")
@@ -209,6 +209,15 @@ def build_brief(request: SoundscapeRequest, cfg: SatieConfig) -> str:
     else:
         lines.append("Use only the recordings above: every voice plays one of these clips. "
                      "No `gen`, `synth` or library (`community/`) voices, and nothing added.")
+        # satie_brief's open questions, answered for every memory (it runs unattended, and
+        # its defaults would add a library crowd bed and weather/time beds).
+        lines += [
+            "No events: the visitor's own footsteps and actions are not sounded, so no `on` voices.",
+            "The ground is not voiced. Time of day and weather are whatever the recordings hold: "
+            "add no rain, wind, insect or bird beds.",
+            "People are heard only as recorded (the speech clip, if listed); no crowd bed of any kind.",
+            "One state: nothing is gated by `zone`.",
+        ]
     if request.mood_prompt:
         lines.append(f"Mood: {request.mood_prompt}")
     lines.append("This runs unattended: where you have open questions, use your stated assumptions.")
@@ -232,8 +241,29 @@ def original_only_violations(report: dict[str, Any], script: str, allowed: set[s
     foreign = [c for c in (report.get("clipsToSupply") or []) if c not in allowed]
     if foreign:
         out.append("clips that aren't our recordings: " + ", ".join(foreign))
+    voices = report.get("voices") or []  # per voice, when the report includes them
+    odd = sorted({str(v.get("clip") or v.get("label")) for v in voices
+                  if v.get("generated") or (v.get("clip") and v["clip"] not in allowed)})
+    if odd:
+        out.append("voices that don't play our recordings: " + ", ".join(odd))
     if _GEN_OR_SYNTH.search(script):
         out.append("generated or synthesized voices in the script")
+    return out
+
+
+def realized_violations(realize: dict[str, Any], samples: dict[str, Any]) -> list[str]:
+    """After realize: anything SATIE delivered that isn't one of our recordings.
+    samples.json entries carry `source` ("provided" for our files)."""
+    out = []
+    if int(realize.get("generated") or 0):
+        out.append(f"{realize['generated']} generated sound(s)")
+    if int(realize.get("fromLibrary") or 0):
+        out.append(f"{realize['fromLibrary']} library recording(s)")
+    entries = samples.get("samples", samples) if isinstance(samples, dict) else {}
+    foreign = sorted(k for k, v in entries.items()
+                     if isinstance(v, dict) and v.get("source") not in (None, "provided"))
+    if foreign:
+        out.append("clips that aren't our files: " + ", ".join(foreign))
     return out
 
 
@@ -337,6 +367,13 @@ class SatieMcpProvider:
         if not samples_url:
             raise SatieError("satie_realize returned no samplesUrl")
         samples = self.http_get_json(samples_url)  # signed URL lasts an hour: save it now
+        if not self.cfg.allow_generation:
+            wrong = realized_violations(realize, samples)
+            if wrong:
+                raise SatieNotOriginal("SATIE delivered sounds that weren't recorded (" + "; ".join(wrong)
+                                       + "); the soundscape isn't used")
+        if int(realize.get("maxSpentCents") or 0):
+            notes.append(f"SATIE spent {realize['maxSpentCents']} cents")
         for take in realize.get("suspectTakes") or []:
             notes.append(f"SATIE flagged a suspect take: {take}")
 

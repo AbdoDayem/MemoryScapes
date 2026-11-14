@@ -72,8 +72,13 @@ class FakeSatie:
         raise AssertionError(name)
 
 
-def _satie(fake, **cfg):
-    return SatieMcpProvider(fake, SatieConfig(**cfg), http_get_json=lambda url: {"clips": {"memory/s1_birdsong": "x"}}, sleep=lambda s: None)
+# What satie_realize's samples.json looks like (live run, 2026-11-14): our files are
+# "provided", keyed by the runtime clip path.
+PROVIDED = {"samples": {"Audio/memory/s1_birdsong": {"url": "u", "source": "provided", "licence": "provided"}}}
+
+
+def _satie(fake, samples=PROVIDED, **cfg):
+    return SatieMcpProvider(fake, SatieConfig(**cfg), http_get_json=lambda url: samples, sleep=lambda s: None)
 
 
 def test_stub_provider_writes_object_based_scene(ctx):
@@ -114,7 +119,7 @@ def test_satie_provider_follows_documented_workflow(ctx):
     assert scene["satie"]["host_map"] == {"s1_birdsong": "s1_birdsong"}
     script = ctx.storage.read_bytes(scene["satie"]["script_key"]).decode()
     assert "loop memory/s1_birdsong\n    at s1_birdsong" in script
-    assert read_json(ctx.storage, scene["satie"]["samples_key"]) == {"clips": {"memory/s1_birdsong": "x"}}
+    assert read_json(ctx.storage, scene["satie"]["samples_key"]) == PROVIDED
 
 
 def test_satie_revises_script_that_drops_a_recording(ctx):
@@ -171,6 +176,25 @@ def test_a_budget_never_buys_sounds_when_generation_is_off(ctx):
     assert realize_args["maxCents"] == 0 and realize_args["preferLibrary"] is False
 
 
+@pytest.mark.parametrize("realized, samples", [
+    ({"samplesUrl": "s", "generated": 1}, PROVIDED),
+    ({"samplesUrl": "s", "fromLibrary": 2}, PROVIDED),
+    ({"samplesUrl": "s"}, {"samples": {"Audio/memory/x": {"source": "library"}}}),
+])
+def test_unrecorded_sounds_in_the_realized_result_are_not_used(ctx, realized, samples):
+    _write_inputs(ctx)
+    fake = FakeSatie(realize=[realized])
+    scene = soundscape.run(ctx, provider=_satie(fake, samples=samples))
+    assert scene["provider"]["name"] == "stub" and "weren't recorded" in scene["provider"]["fallback_reason"]
+
+
+def test_voice_report_catches_a_generated_voice():
+    from memoryscapes_workers.providers.soundscape import original_only_violations
+
+    rep = {"voices": [{"clip": "memory/a", "generated": False}, {"clip": None, "label": "rain", "generated": True}]}
+    assert original_only_violations(rep, "loop memory/a", {"memory/a"}) == ["voices that don't play our recordings: rain"]
+
+
 def test_script_scan_catches_generated_and_synth_voices():
     from memoryscapes_workers.providers.soundscape import original_only_violations
 
@@ -188,6 +212,8 @@ def test_brief_respects_generation_policy():
     req = SoundscapeRequest("m", [SoundscapeSource(PLACED, "u1"), SoundscapeSource(DIFFUSE, "u2")], "a", "ua", 2, [0, 0, 0], [1, 1, 1])
     strict = build_brief(req, SatieConfig())
     assert "Use only the recordings above" in strict and "No `gen`, `synth`" in strict
+    assert "no crowd bed" in strict and "add no rain, wind, insect or bird beds" in strict
+    assert "no crowd bed" not in build_brief(req, SatieConfig(allow_generation=True))
     assert "host s1_birdsong: clip memory/s1_birdsong" in strict
     assert "clip memory/s2_traffic (traffic, no single location)" in strict
     assert "quiet voices" in build_brief(req, SatieConfig(allow_generation=True))

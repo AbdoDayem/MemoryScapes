@@ -161,12 +161,25 @@ Writes `localize/sources.json` with position, spread, confidence, method, and a 
 - Spending is capped by `SATIE_MAX_CENTS`, default 0. Retries reuse the same `requestKey`, so a re-run resumes the purchase instead of buying again.
 - If SATIE fails, the stage falls back to the stub and records why in `soundscape/scene.json`.
 
-### Unverified against the live SATIE server
+### SATIE against the live server (checked 2026-11-14)
 
-These are isolated in `providers/soundscape.py` and `providers/mcp_transport.py`:
-- The scene manifest shape. The server publishes the real one as the resource `satie://schema/scene`.
-- Whether `satie_realize` `samples` accepts our own stem URLs, and whether SATIE's 30 s audio limit applies to them.
-- How a headless worker authenticates. The MCP uses OAuth sign-in, and the code currently sends `SATIE_MCP_TOKEN` as a bearer token.
-- The exact response fields of each tool. They're parsed defensively.
+A real memory (the Canada Water walk) went through the provider's steps on the live MCP:
+`satie_inspect_scene` → `satie_brief` → `satie_compose` → `satie_check` → `satie_audit_scene` → `satie_realize`. The result was 8 of 8 sounds from our own files (`source: "provided"`), 0 generated, 0 from the library, and 0¢ spent.
+
+- **Verified:**
+  - The scene manifest is `satie.scene/v1`: `objects` hosted `at` our source ids, and our recordings as scene `samples`.
+  - Scripts play a clip as `loop <clip>` with `at <host>` as an indented property.
+  - `satie_realize` accepts our stem URLs as `samples`, free.
+  - The fields the guards read: `clipsToSupply`, `libraryClips`, `takes` and per-voice `generated` from check and audit, plus `generated`, `fromLibrary`, `maxSpentCents` and per-sample `source` from realize.
+- **Original sound only** (`SATIE_ALLOW_GENERATION=false`, the default):
+  - The brief answers SATIE's open questions up front: no events, no weather or time beds, and no crowd bed. SATIE's defaults would otherwise add a library crowd bed.
+  - Before realize, the script must buy 0 takes, use no library clips, and play only our clips. One revision is allowed; then nothing is realized and the stage uses the stub.
+  - Realize always runs with `maxCents: 0` and `preferLibrary: false`, even if `SATIE_MAX_CENTS` is raised. After realize, anything not `provided` is rejected.
+- **`saveSoundscapes` defaults to `off`.** SATIE's own default is a public gallery entry; `SATIE_SAVE_SOUNDSCAPES` changes it.
+- **Training:** on the Free plan, SATIE keeps the scene and any audio it can fetch for training, and Free can't opt out. Paid plans can, with `satie_training`. Decide this before passing real users' recordings.
+- **Still open:**
+  - How a headless worker authenticates. Signing in through an MCP client (OAuth) works; the worker sends `SATIE_MCP_TOKEN` as a bearer token, which hasn't been tried against the server.
+  - SATIE's 30 s audio limit. Our stem URLs were on `localhost`, so SATIE never fetched them.
+  - The samples need URLs that the viewer's SATIE runtime can fetch.
 
 The model adapters (`ClapTagger`, `AudioSepSeparator`, `DemucsVocalsSeparator`, `GroundingDinoDetector`) follow those libraries' documented APIs but haven't been run here. The tests use fakes and synthetic scenes with known ground truth.
