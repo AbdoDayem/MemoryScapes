@@ -10,6 +10,7 @@
     "test": "node --test \"src/**/*.test.ts\""
   },
   "dependencies": {
+    "@fontsource/nunito": "^5.3.0",
     "@memoryscapes/manifest": "*",
     "@sparkjsdev/spark": "2.4.0",
     "globe.gl": "^2.46.2",

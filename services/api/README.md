@@ -16,5 +16,18 @@ with the `usr_dev` user. Set `DATABASE_URL` to use another file or Postgres. All
 code is in `app/db.py`; the tables are in `app/schema.py`. Inspect it with
 `sqlite3 data/memoryscapes.db`.
 
-**Working now:** `GET /memories/{id}` and `GET /memories/{id}/files/{key}` (read from
-storage, used by the viewer). The other endpoints return `501` until they're implemented.
+**Endpoints** (contract: [docs/webapp-plan/backend.md](../../docs/webapp-plan/backend.md)):
+
+| Endpoint | Does |
+|---|---|
+| `POST /memories` | Create a draft and return an upload URL per file |
+| `PUT /memories/{id}/upload/{name}` | Receive one file's bytes |
+| `POST /memories/{id}/process` | Start the workers' pipeline (`app/pipeline.py`) |
+| `GET /memories`, `GET /memories/{id}` | List memories; one memory with its manifest, stages and details |
+| `PATCH /memories/{id}` | Title, description, location (rounded to ~100 m); private only for now |
+| `GET /globe` | Memories that have a location, for the homepage globe |
+| `GET /memories/{id}/files/{key}` | The viewer's files (from the database, or storage) |
+| `GET /memories/{id}/events`, `POST /memories/{id}/report` | Not built yet (`501`) |
+
+Uploads and pipeline outputs live under `services/workers/data/storage/<id>/` (`STORAGE_ROOT`);
+the pipeline runs with `WORKERS_PYTHON` (default `services/workers/.venv`).

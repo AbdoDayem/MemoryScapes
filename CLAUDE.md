@@ -21,10 +21,12 @@ Partly a scaffold: most API endpoints still return `501`. In the workers, the vi
 ## Commands
 
 ```bash
-cp .env.example .env
-npm run infra:up                 # Postgres/PostGIS, Redis, MinIO (Docker)
-npm install && npm run dev:web   # web app
-cd services/api && pip install -e ".[dev]" && uvicorn app.main:app --reload
+npm install && npm run dev:web   # web app on :3000 (globe homepage, upload, viewer)
+cd services/api && uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -e ".[dev]"
+cd services/api && .venv/bin/uvicorn app.main:app --reload   # API on :8000, SQLite at services/api/data/ (no Docker)
+cd services/api && .venv/bin/python -m app.seed               # demo memories for the globe
+cd services/api && .venv/bin/python -m pytest                 # API tests
+npm run infra:up                 # later: Postgres/PostGIS, Redis, MinIO (Docker); nothing uses them yet
 cd services/workers && python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev]"   # core + tests
 cd services/workers && .venv/Scripts/python -m pytest                                            # worker tests
 cd services/workers && pip install -e ".[audio,visual,satie]"   # model backends + SATIE MCP client

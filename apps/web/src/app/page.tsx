@@ -1,10 +1,6 @@
-import MemoryGlobe from "@/components/globe/MemoryGlobe";
+import HomePage from "@/components/home/HomePage";
 
-/** Home: the globe of public memories. */
-export default function HomePage() {
-  return (
-    <main>
-      <MemoryGlobe />
-    </main>
-  );
+/** Home: the globe of memories, with "+ New memory" on top. */
+export default function Page() {
+  return <HomePage />;
 }
