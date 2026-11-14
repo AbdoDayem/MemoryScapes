@@ -52,5 +52,11 @@ class MemorySummary(BaseModel):
     captured_at: datetime | None
 
 
+class UploadResult(BaseModel):
+    file_name: str
+    stored_as: str  # video.<ext> or audio.<ext> in {id}/upload/
+    bytes: int
+
+
 class ReportRequest(BaseModel):
     reason: str

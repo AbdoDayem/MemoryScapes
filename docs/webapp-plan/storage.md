@@ -85,9 +85,9 @@ What exists, and what we add:
 | `list(prefix) -> list[str]` | Exists | Keys under a prefix |
 | `LocalStore.path(key) -> Path` | Exists | The file's path; used for serving files and as `--root` for the pipeline |
 | `S3Store.presigned_url(key)` | Exists | Short-lived download URL |
-| `save(key, stream, max_bytes) -> int` | **Add** (both versions) | Stream an upload to `key`. Writes to a temp key, then renames, so a broken upload never leaves half a file. Stops and raises once `max_bytes` is passed. Returns the size. |
-| `write_bytes(key, data)` | **Add** | Small files like `upload/meta.json` |
-| `delete_prefix(prefix)` | **Add** | Delete a memory's files |
+| `writer(key)` | **Added** (local) | A context manager for writing a file in chunks (an upload as it arrives). Writes to a hidden temp file and renames at the end, so a broken upload never leaves half a file. The router checks the size limit as chunks arrive. |
+| `write_bytes(key, data)` | **Added** | Small files like `upload/meta.json` |
+| `delete(key)`, `delete_prefix(prefix)` | **Added** | Delete a file, or a memory's files |
 | `S3Store.presigned_put(key)` | **Add later** | Direct-to-storage uploads |
 
 Also add `save` and friends to the `BlobStore` protocol. Keep the existing functions as they
@@ -103,7 +103,7 @@ it serves a local file, or redirects to a presigned URL on S3.)
 
 **Now:** the browser sends each file to the API, and the API streams it into storage.
 ```
-browser ──PUT /memories/{id}/upload/{name}──> API ──storage.save──> {id}/upload/video.mov
+browser ──PUT /memories/{id}/upload/{name}──> API ──store.writer──> {id}/upload/video.mov
 ```
 
 **Later (S3/R2):** the API hands out a presigned URL and the browser uploads straight to
