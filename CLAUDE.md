@@ -4,7 +4,7 @@ MemoryScapes turns a video (or panoramas) plus an audio recording into a walkabl
 
 ## Status
 
-Mostly a scaffold: API endpoints return `501`. In the workers, the audio stages (`separate`, `localize`, `soundscape`) are implemented and tested. The other stages raise `NotImplementedError`. Follow the build phases in `docs/ARCHITECTURE.md` § 9. The MVP is video → COLMAP → gsplat → web viewer, with private memories only. Stage data contracts are in `services/workers/README.md`.
+Mostly a scaffold: API endpoints return `501`. In the workers, `ingest` (ffmpeg), `poses` (pycolmap, CPU) and the audio stages (`separate`, `localize`, `soundscape`) are implemented. `splat` and `publish` raise `NotImplementedError`. `python -m memoryscapes_workers.run` runs the pipeline on one uploaded video, and the debugger's upload page drives it. Follow the build phases in `docs/ARCHITECTURE.md` § 9. The MVP is video → COLMAP → gsplat → web viewer, with private memories only. Stage data contracts are in `services/workers/README.md`.
 
 ## Layout
 

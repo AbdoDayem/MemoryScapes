@@ -15,10 +15,22 @@ For sample data, generate the example memories first. They now include synthetic
 cd services/workers && .venv/Scripts/python examples/run_example.py
 ```
 
+## Uploading a video
+
+**Upload a video** in the sidebar sends a video (and optionally a separate audio recording) to the dev server. The server saves it under `<data root>/<name>/upload/` and starts `python -m memoryscapes_workers.run` on it. The **Processing** tab shows each stage's status, time and errors, plus the live log. When the run finishes, the other tabs show the results. Splat and publish are skipped until they exist.
+
+Requirements on the machine running `npm run dev`:
+- ffmpeg on `PATH`, for example `winget install Gyan.FFmpeg`. A fresh winget install is found even before the shell picks up the new PATH.
+- The workers venv at `services/workers/.venv` with the `audio` and `visual` extras, or `MEMORYSCAPES_PYTHON=<python>`.
+- AudioSep at `<repo>/.models/AudioSep`, or `AUDIOSEP_DIR`. See `services/workers/README.md` "Models".
+
+Turning off **Visual grounding** skips Grounding DINO, the slowest step on a CPU, so sounds are placed by stereo only. `services/workers/examples/make_video.py park_walk out.mp4` renders a test video with known source positions.
+
 ## Tabs
 
 | Tab | What it shows |
 |---|---|
+| **Processing** | For uploaded memories: each stage's status, time and errors, the live log, and re-run buttons |
 | **Checks** | Integration checks, worst first (see below) |
 | **Audio** | Tag scores against the selection thresholds; the recording, every stem and the ambient bed, with waveform, activity envelope and playback; a spectrogram of the selected track; dropped stems and why |
 | **Localization** | Top-down map of the camera path, scene points, placed sounds with their spread and ground truth; a table of method, confidence, spread, level at 1 m and error |

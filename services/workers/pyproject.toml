@@ -10,13 +10,19 @@ dependencies = [
   "pydantic>=2.7",
   "boto3>=1.34",
   "jsonschema>=4.22",
+  "pillow>=10",
 ]
 
 [project.optional-dependencies]
-# Heavy GPU / ML dependencies are split out so the API and CI stay light.
-# AudioSep is not on PyPI: clone https://github.com/Audio-AGI/AudioSep and add it to PYTHONPATH.
-visual = ["gsplat", "torch", "opencv-python", "transformers>=4.44", "pillow"]
-audio = ["torch", "torchaudio", "demucs>=4.0", "transformers>=4.44"]
+# Heavy ML dependencies are split out so the API and CI stay light. CPU-only torch:
+#   pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cpu
+# AudioSep is not on PyPI: see README "Models" (clone into <repo>/.models/AudioSep).
+visual = ["torch", "transformers>=4.44,<5", "pycolmap>=3.11"]
+audio = [
+  "torch", "torchaudio", "torchvision", "demucs>=4.0", "transformers>=4.44,<5",
+  # AudioSep's inference path imports these
+  "lightning", "librosa", "torchlibrosa", "ftfy", "regex", "braceexpand", "webdataset", "h5py", "pandas", "pyyaml", "scikit-learn", "timm", "wget",
+]
 satie = ["mcp>=1.9"]
 dev = ["pytest>=8"]
 

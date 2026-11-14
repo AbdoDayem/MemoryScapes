@@ -132,3 +132,9 @@ pre.code { margin: 0; padding: 10px 12px; background: var(--soft); border-radius
   .track { grid-template-columns: 34px minmax(0, 1fr); }
   .track canvas { grid-column: 1 / -1; }
 }
+
+.form { display: flex; flex-direction: column; gap: 14px; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field > span { font-weight: 600; }
+.field input[type="text"], .field input[type="number"] { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; background: var(--panel); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }

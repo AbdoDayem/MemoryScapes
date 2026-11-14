@@ -13,7 +13,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Plugin } from "vite";
 
-export const STAGES = ["ingest", "poses", "splat", "separate", "localize", "soundscape", "publish", "debug"] as const;
+export const STAGES = ["upload", "job", "ingest", "poses", "splat", "separate", "localize", "soundscape", "publish", "debug"] as const;
 
 const TYPES: Record<string, string> = {
   ".json": "application/json",

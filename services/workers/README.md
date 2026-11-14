@@ -11,8 +11,8 @@ ingest ─┬─> poses ─┬──────────> splat ────
 
 | Stage | Module | Hardware | Status |
 |---|---|---|---|
-| Ingest | `stages/ingest.py` | CPU | stub |
-| Camera poses | `stages/poses.py` | GPU | stub |
+| Ingest | `stages/ingest.py` | CPU (ffmpeg) | implemented |
+| Camera poses | `stages/poses.py` | CPU (pycolmap SfM) | implemented |
 | Splat training | `stages/splat.py` | GPU | stub |
 | Separation + labeling | `stages/separate.py` | GPU | implemented |
 | Localization | `stages/localize.py` | GPU | implemented |
@@ -49,7 +49,30 @@ pytest
 
 Each run writes the full stage output, so you can listen to `ingest/audio.wav` and `separate/stems/*.wav`. It also writes stand-ins for the splat pipeline per [docs/SPLAT_OUTPUTS.md](../../docs/SPLAT_OUTPUTS.md): rendered PNG keyframes, a 3DGS `point_cloud.ply`, training metrics, splat renders, and `debug/truth.json`. That's everything the debugger (`tools/debugger`) needs. `hard_mode`'s splat is deliberately at half scale, so the debugger has an alignment failure to show. It also writes `report.md` (per-sound error, method, confidence, verdict) and `map.svg` (a top-down view of the true and estimated positions). The script exits non-zero if anything is placed confidently in the wrong spot. `tests/test_examples.py` runs the same scenes as regression tests, and CI (`.github/workflows/workers.yml`) runs both on every PR.
 
-AudioSep isn't on PyPI. Clone [Audio-AGI/AudioSep](https://github.com/Audio-AGI/AudioSep), download its checkpoint, put the repo on `PYTHONPATH`, and set `AUDIOSEP_CONFIG` and `AUDIOSEP_CHECKPOINT`.
+## Running on a real video
+
+```bash
+python -m memoryscapes_workers.run --root <data root> --memory <id> [--max-seconds 30] [--no-detector] [--only ingest,poses]
+```
+
+This expects `<root>/<id>/upload/meta.json` (`{"video": "video.mp4", "audio": null}`) and the files it names. The debugger's upload page writes exactly that. Stages run in DAG order. Unimplemented stages (splat, publish) are marked skipped, and stages whose dependencies failed are marked blocked, while the others carry on. Progress goes to `<id>/job/status.json`, and the full log to `<id>/job/log.txt`.
+
+- **ingest:** ffmpeg pulls out the audio (original channels and rate) and samples about 60 keyframes, dropping the blurriest 15%. It also reads the GPS location and capture time from the container metadata.
+- **poses:** COLMAP incremental SfM on the CPU through pycolmap, then normalizes the result to the pipeline's frame: upright with +Y up, the first camera looking along +Z, and metric scale. **The scale is an estimate.** Monocular SfM has no true scale, so the stage assumes the median camera height above the ground is 1.5 m. On `examples/make_video.py park_walk`, it recovered a 5.0 m walk as about 4.6 m.
+
+On the development laptop (CPU only), 12 s of video took about 2.5 min for poses, plus separation and localization time.
+
+## Models
+
+Each runs on the CPU, so there's no GPU needed. Weights download on first use, except AudioSep's.
+
+| Model | Install |
+|---|---|
+| CLAP, Grounding DINO | `transformers` (Hugging Face cache) |
+| HTDemucs | `demucs` |
+| AudioSep | Not on PyPI. Clone [Audio-AGI/AudioSep](https://github.com/Audio-AGI/AudioSep) to `<repo>/.models/AudioSep`, and put `audiosep_base_4M_steps.ckpt` and `music_speech_audioset_epoch_15_esc_89.98.pt` from the [AudioSep Space](https://huggingface.co/spaces/Audio-AGI/AudioSep/tree/main/checkpoint) in its `checkpoint/` folder (3.6 GB). Set `AUDIOSEP_DIR` if it lives elsewhere. |
+
+Two compatibility shims in `audio/separation.py` let AudioSep run on current torch and transformers without editing its code. One allowlists the NumPy types its checkpoints pickle, so they load under `weights_only=True` instead of turning that safety off. The other drops a stale `position_ids` key from its CLAP checkpoint.
 
 ## Audio stages: data contracts
 
