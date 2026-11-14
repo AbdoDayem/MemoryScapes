@@ -170,6 +170,7 @@ def estimate_alignment(
     eye_height_m: float = 1.5,
     fixed_scale: float | None = None,
     times: np.ndarray | None = None,
+    segments: np.ndarray | None = None,
 ) -> Alignment:
     """Compute the SfM -> world similarity. Cameras must be in capture order.
 
@@ -177,6 +178,8 @@ def estimate_alignment(
     pace: when the eye-height scale implies an implausible speed (the "ground" plane was
     really distant structure, e.g. a reconstruction of far buildings with no floor), the
     scale assumes a WALK_SPEED_MPS walk instead and the level comes from the cameras.
+    ``segments`` (one id per camera, e.g. the shot of an edited video) keeps the jumps
+    between segments out of the walking-speed estimate.
     """
     cam_up = _normalize((cam_c2w_rot @ np.array([0.0, -1.0, 0.0])).mean(axis=0))
     plane = fit_ground_plane(points, cam_centers, cam_up)
@@ -197,7 +200,7 @@ def estimate_alignment(
         scale = 3.0 / max(float(np.median(d.min(axis=1))), 1e-9)
         confidence, ratio, scale_method = 0.15, None, "scene_depth"
 
-    walk = _walking_speed_scale(cam_centers, times)
+    walk = _walking_speed_scale(cam_centers, times, segments)
     if fixed_scale is None and walk is not None:
         walk_scale, path_units, span = walk
         speed = path_units * scale / span
@@ -240,12 +243,19 @@ def estimate_alignment(
     )
 
 
-def _walking_speed_scale(cam_centers: np.ndarray, times: np.ndarray | None):
-    """(scale for a WALK_SPEED_MPS walk, path length in SfM units, seconds), if usable."""
+def _walking_speed_scale(cam_centers: np.ndarray, times: np.ndarray | None,
+                         segments: np.ndarray | None = None):
+    """(scale for a WALK_SPEED_MPS walk, path length in SfM units, seconds), if usable.
+    Path and time are summed within segments only."""
     if times is None or len(times) != len(cam_centers) or len(times) < 3:
         return None
-    span = float(times[-1] - times[0])
-    path = float(np.linalg.norm(np.diff(cam_centers, axis=0), axis=1).sum())
+    seg = np.zeros(len(times), int) if segments is None else np.asarray(segments)
+    path = span = 0.0
+    for k in np.unique(seg):
+        m = seg == k
+        if m.sum() >= 2:
+            path += float(np.linalg.norm(np.diff(cam_centers[m], axis=0), axis=1).sum())
+            span += float(times[m][-1] - times[m][0])
     if span < 3.0 or path <= 0:
         return None
     return WALK_SPEED_MPS * span / path, path, span

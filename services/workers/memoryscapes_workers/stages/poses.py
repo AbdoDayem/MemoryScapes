@@ -40,8 +40,8 @@ from memoryscapes_workers.stagekit import StageError, StageIO, run_stage, write_
 
 STAGE = "poses"
 log = logging.getLogger("memoryscapes.poses")
-VERSION = "4"  # 2: audio contract; 3: points3d_rgb.npy; 4: focal prior, mapper fallback,
-#                sky masks, walking-speed scale check
+VERSION = "5"  # 2: audio contract; 3: points3d_rgb.npy; 4: focal prior, mapper fallback,
+#                sky masks, walking-speed scale check; 5: edited videos (cross-shot)
 
 CAPTURE_HINT = (
     "Move slowly and steadily, walk through the space or orbit the subject instead of "
@@ -59,6 +59,9 @@ class PosesConfig(BaseModel):
     focal_length_factor: float = Field(0.8, gt=0.2, lt=3)
     # Ignore features on the sky (clouds have no parallax and drift); see visual/sky_mask.py.
     sky_mask: bool = True
+    # Edited videos: frames sampled per shot and matched across shots, so shots that see
+    # the same scenery can join one reconstruction.
+    cross_shot_samples: int = 10
     max_num_features: int = 8192
     matcher: Literal["sequential", "exhaustive"] = "sequential"
     sequential_overlap: int = 15
@@ -82,7 +85,23 @@ def _largest(recs: dict) -> object | None:
     return max(recs.values(), key=lambda r: r.num_reg_images())
 
 
-def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int, focal_factor: float):
+def cross_shot_pairs(shot_of: dict[str, int], per_shot: int) -> list[tuple[str, str]]:
+    """Image pairs linking different shots: up to ``per_shot`` evenly spaced frames from
+    each shot, every combination across each pair of shots."""
+    groups: dict[int, list[str]] = {}
+    for name in sorted(shot_of):
+        groups.setdefault(shot_of[name], []).append(name)
+    picks = {}
+    for k, names in groups.items():
+        idx = np.unique(np.linspace(0, len(names) - 1, min(per_shot, len(names))).round().astype(int))
+        picks[k] = [names[i] for i in idx]
+    keys = sorted(picks)
+    return [(a, b) for i, ka in enumerate(keys) for kb in keys[i + 1:]
+            for a in picks[ka] for b in picks[kb]]
+
+
+def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int, focal_factor: float,
+         shot_of: dict[str, int] | None = None):
     import pycolmap
 
     work = io.work_dir / "colmap"
@@ -116,9 +135,22 @@ def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int, focal_fa
         pairing.overlap = cfg.sequential_overlap
         pairing.quadratic_overlap = True
         pycolmap.match_sequential(db, pairing_options=pairing, device=device)
+    n_shots = len(set((shot_of or {}).values()))
+    if n_shots > 1 and cfg.matcher != "exhaustive":
+        pairs = cross_shot_pairs(shot_of, cfg.cross_shot_samples)
+        pair_file = work / "cross_shot_pairs.txt"
+        pair_file.write_text("\n".join(f"{a} {b}" for a, b in pairs) + "\n", encoding="utf-8")
+        pycolmap.match_image_pairs(db, pairing_options=pycolmap.ImportedPairingOptions(
+            match_list_path=pair_file), device=device)
+        log.info("[%s] %d shots: matched %d cross-shot pairs", STAGE, n_shots, len(pairs))
     io.progress(0.4, "features matched")
 
     needed = max(10, cfg.min_registered_fraction * n_images)
+    if n_shots > 1:
+        # An edited video can't always be joined: accept the largest linked part if it
+        # covers at least half of the longest shot (the stage then warns what's left out).
+        longest = max(list(shot_of.values()).count(k) for k in set(shot_of.values()))
+        needed = max(10, min(needed, 0.5 * longest))
 
     def mapping(kind: str):
         sparse = work / f"sparse_{kind}"
@@ -155,6 +187,16 @@ def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int, focal_fa
     return rec, work, used
 
 
+def shot_coverage(meta: dict, placed: set[str]) -> list[dict]:
+    """Per shot: its time span and the fraction of its keyframes the reconstruction placed."""
+    out = []
+    for k, shot in enumerate(meta.get("shots") or []):
+        names = [Path(f["file"]).name for f in meta["keyframes"]["frames"] if f.get("shot", 0) == k]
+        if names:
+            out.append({**shot, "frames": len(names), "placed": sum(n in placed for n in names) / len(names)})
+    return out
+
+
 def focal_prior(keyframes: dict, cfg: PosesConfig) -> dict:
     """Starting focal length for SfM, as a factor of the long image side."""
     if keyframes.get("focal_px"):
@@ -175,7 +217,8 @@ def _poses(io: StageIO, cfg: PosesConfig) -> dict:
     n_images = len(frame_times)
 
     focal = focal_prior(meta["keyframes"], cfg)
-    rec, work, mapper_used = _sfm(io, cfg, image_dir, n_images, focal["factor"])
+    shot_of = {Path(f["file"]).name: f.get("shot", 0) for f in meta["keyframes"]["frames"]}
+    rec, work, mapper_used = _sfm(io, cfg, image_dir, n_images, focal["factor"], shot_of)
 
     # ---- gravity, metric scale, origin
     images = sorted((im for im in rec.images.values() if im.has_pose), key=lambda im: im.name)
@@ -183,7 +226,9 @@ def _poses(io: StageIO, cfg: PosesConfig) -> dict:
     rots = np.array([im.cam_from_world().rotation.matrix().T for im in images])
     pts = np.array([p.xyz for p in rec.points3D.values()])
     times = np.array([frame_times[im.name] for im in images], float)
+    shot_ids = np.array([shot_of.get(im.name, 0) for im in images])
     align = al.estimate_alignment(centers, rots, pts, eye_height_m=cfg.eye_height_m, times=times,
+                                  segments=shot_ids,
                                   fixed_scale=cfg.fixed_scale)
 
     # ---- undistort, then move the undistorted model into the world frame
@@ -246,10 +291,17 @@ def _poses(io: StageIO, cfg: PosesConfig) -> dict:
         "path_length_m": round(float(np.linalg.norm(np.diff([c[:3, 3] for c in c2ws], axis=0), axis=1).sum()), 2),
         "scene_extent_m": np.round(np.percentile(world_pts, 98, axis=0) - np.percentile(world_pts, 2, axis=0), 2).tolist(),
     }
+    coverage = shot_coverage(meta, {im.name for im in images})
     write_json(out / "alignment.json", {**align.to_dict(), "stats": stats, "mapper": mapper_used,
+                                        "shots": coverage,
                                         "focal_prior": focal})
 
     warnings = []
+    if len(coverage) > 1 and any(c["placed"] < 0.5 for c in coverage):
+        kept = [c for c in coverage if c["placed"] >= 0.5]
+        spans = ", ".join(f"{c['start_s']:.0f}-{c['end_s']:.0f} s" for c in kept)
+        warnings.append(f"Only part of this edited video could be joined into one space ({spans}); "
+                        "the other shots don't share enough scenery with it and are left out.")
     if align.scale_confidence < 0.4:
         warnings.append(
             f"Metric scale is a rough guess ({align.scale_method}); distances may be off."

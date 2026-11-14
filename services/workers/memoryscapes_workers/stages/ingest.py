@@ -32,8 +32,8 @@ from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.stagekit import UPLOAD_PREFIX, StageError, StageIO, run_stage, write_json
 
 STAGE = "ingest"
-VERSION = "4"  # 2: audio contract (audio.wav, meta.json); 3: separate audio aligned;
-#                4: focal metadata, keyframe floor capped per second
+VERSION = "5"  # 2: audio contract (audio.wav, meta.json); 3: separate audio aligned;
+#                4: focal metadata, keyframe floor capped per second; 5: shot detection
 
 
 class IngestConfig(BaseModel):
@@ -176,6 +176,14 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
         raise StageError(STAGE, "Could not decode enough frames from the video.")
     io.progress(0.5, f"analyzed {n_candidates} candidate frames")
 
+    from memoryscapes_workers.visual.shots import find_shots
+
+    shots = find_shots(stats.thumbs, sample_fps) if stats.thumbs is not None else None
+    if shots is not None and len(shots.segments) > 1:
+        warnings.append(
+            f"This video is edited: {len(shots.segments)} shots joined with cuts or dissolves. "
+            "Transition frames are skipped; shots that don't share scenery can't be joined "
+            "into one walkable space, so part of the video may be left out.")
     sel = keyframes.select(
         stats,
         target_step=cfg.target_step,
@@ -183,6 +191,7 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
         max_keyframes=cfg.max_keyframes,
         blur_reject=cfg.blur_reject,
         sharpness_window=max(3, int(round(sample_fps))),
+        exclude=shots.transition if shots is not None else None,
     )
     warnings += sel.warnings
     if sel.total_motion < cfg.min_total_motion:
@@ -212,6 +221,7 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
                 "t": round(i / sample_fps, 4),
                 "candidate": i,
                 "sharpness": round(float(sel.rel_sharpness[i]), 3),
+                "shot": shots.shot_of(i) if shots is not None else 0,
             })
         if i >= last:
             break
@@ -228,6 +238,8 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
         "audio": audio_meta,
         "geo": dict(zip(("lat", "lon", "alt"), info.geo, strict=True)) if info.geo else None,
         "captured_at": info.captured_at,
+        "shots": [{"start_s": round(a / sample_fps, 3), "end_s": round(b / sample_fps, 3)}
+                  for a, b in (shots.segments if shots is not None else [(0, n_candidates)])],
         "keyframes": {
             "count": len(frames_meta),
             "width": o_size[0],

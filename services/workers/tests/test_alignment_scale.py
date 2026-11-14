@@ -36,6 +36,19 @@ def test_implausible_eye_height_scale_falls_back_to_walking_pace():
     assert a.up_method == "camera_up"
 
 
+def test_jumps_between_shots_are_not_walking():
+    """An edited video: two shots, the second starting 50 units away. Only the walking
+    inside each shot counts toward the speed."""
+    c, r, p, t = scene(path_units=0.4, floor_below=40.0)
+    c2 = c.copy()
+    c2[20:, 2] -= 50.0  # the cut: the camera "teleports"
+    seg = (np.arange(len(c)) >= 20).astype(int)
+    a = estimate_alignment(c2, r, p, times=t, segments=seg)
+    within = sum(np.linalg.norm(np.diff(c2[seg == k], axis=0), axis=1).sum() for k in (0, 1))
+    span = sum(t[seg == k][-1] - t[seg == k][0] for k in (0, 1))
+    assert a.scale_method == "walking_speed" and abs(a.scale * within / span - 1.2) < 1e-6
+
+
 def test_without_times_nothing_changes():
     c, r, p, _ = scene(path_units=0.4, floor_below=40.0)
     assert estimate_alignment(c, r, p).scale_method == "eye_height"
