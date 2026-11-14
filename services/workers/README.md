@@ -71,7 +71,14 @@ This is the deploy path. From `services/workers`, in PowerShell:
    That runs ingest → poses → splat (`trainer=auto` picks gsplat on CUDA) → separate → localize → soundscape → publish.
 7. Serve and view it: `cd ..\api; uvicorn app.main:app --port 8000`, then `npm run dev:web` from the repo root. Open http://localhost:3000/memories/mem_1 and press **Start sound**. Placed sources pan and get louder as you walk.
 
-Settings go in `<repo>\.env`, which is git-ignored and loaded by the CLI; real environment variables win. For example `SOUNDSCAPE_PROVIDER=satie`, `SATIE_MCP_TOKEN=…`, `STORAGE_ROOT=D:\memoryscapes`. Keep `SATIE_MAX_CENTS=0` and `SATIE_ALLOW_GENERATION=false` unless the team agrees otherwise: SATIE should only arrange the recorded sounds.
+Settings go in `<repo>\.env`, which is git-ignored and loaded by the CLI; real environment variables win. For example `SOUNDSCAPE_PROVIDER=satie`, `STORAGE_ROOT=D:\memoryscapes`. Keep `SATIE_MAX_CENTS=0` and `SATIE_ALLOW_GENERATION=false` unless the team agrees otherwise: SATIE should only arrange the recorded sounds.
+
+To use SATIE on the server:
+1. `.venv\Scripts\pip install -e ".[satie]"`.
+2. Sign the server in once with its own SATIE account: `.venv\Scripts\memoryscapes-worker satie-login`. A browser opens on satie.world; after you sign in, it returns to `localhost` and the worker saves a refresh token to `<repo>\.satie\worker-token.json`. That file is git-ignored; keep it private, and set `SATIE_TOKEN_FILE` to store it elsewhere. Over SSH, or with the browser on another machine, use `satie-login --paste` and paste the `localhost` address the browser lands on.
+3. Check it with `memoryscapes-worker satie-login --status`. It shows the plan and balance, never the token.
+4. Set `SOUNDSCAPE_PROVIDER=satie`. The worker then refreshes its access token by itself. If the login is revoked, the stage falls back to the stub and `soundscape/scene.json` says to run `satie-login` again. A `SATIE_MCP_TOKEN` in the environment overrides the saved login.
+5. The viewer's SATIE runtime loads each stem from the URL the worker gave SATIE. Set `PUBLIC_API_URL` to the API's address as viewers reach it (for example `https://memories.example.org`, not `localhost`), and the stems are linked as `<PUBLIC_API_URL>/memories/<id>/files/...`.
 
 Capture tips that matter most:
 - One continuous take. Edited videos are split into shots, and only the shots that join up are kept.
@@ -177,9 +184,9 @@ A real memory (the Canada Water walk) went through the provider's steps on the l
   - Realize always runs with `maxCents: 0` and `preferLibrary: false`, even if `SATIE_MAX_CENTS` is raised. After realize, anything not `provided` is rejected.
 - **`saveSoundscapes` defaults to `off`.** SATIE's own default is a public gallery entry; `SATIE_SAVE_SOUNDSCAPES` changes it.
 - **Training:** on the Free plan, SATIE keeps the scene and any audio it can fetch for training, and Free can't opt out. Paid plans can, with `satie_training`. Decide this before passing real users' recordings.
-- **Still open:**
-  - How a headless worker authenticates. Signing in through an MCP client (OAuth) works; the worker sends `SATIE_MCP_TOKEN` as a bearer token, which hasn't been tried against the server.
-  - SATIE's 30 s audio limit. Our stem URLs were on `localhost`, so SATIE never fetched them.
-  - The samples need URLs that the viewer's SATIE runtime can fetch.
+- **Sign-in:** SATIE's MCP server is an OAuth 2.1 resource. Its metadata names Supabase Auth, which supports dynamic client registration, PKCE (S256), `refresh_token` and `offline_access`. `satie-login` uses exactly that: a public client with no secret, then refresh tokens. Without a token the server answers 401 `invalid_token`, and the worker reports that as "not signed in". Tested with fake endpoints; the first real sign-in happens on the server.
+- **Samples load from our URLs.** Every scene sample needs a `url`, and the runtime fetches the sound from it. An upload doesn't replace that.
+- **Uploading the stems** (`SATIE_UPLOAD_STEMS=true`, off by default). After the original-only checks pass, each recording is uploaded through `satie_asset` (begin → PUT → finalize) under its `samples.json` key (`Audio/memory/<id>`). SATIE keeps it as a provided sample. Uploads are capped at 16 MB, so longer stems go up as MP3; this was tested live with a 46 s stem. A failed upload only adds a note.
+- **Listening needs a paid plan.** `satie_listen` (its review of a ≤30 s, 16-bit WAV) answers "needs the Vibecoder plan" on Free, so the worker doesn't call it.
 
 The model adapters (`ClapTagger`, `AudioSepSeparator`, `DemucsVocalsSeparator`, `GroundingDinoDetector`) follow those libraries' documented APIs but haven't been run here. The tests use fakes and synthetic scenes with known ground truth.

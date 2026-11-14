@@ -8,15 +8,18 @@ Providers:
       satie_inspect_scene -> satie_brief -> satie_compose -> satie_audit_scene -> satie_realize
   The output is a .satie script plus samples.json, played in the viewer by satie-runtime.
 
-Not documented publicly, so isolated here and worth checking against the live server:
-- the scene manifest shape (the server publishes it as resource satie://schema/scene),
-- whether satie_realize's `samples` accepts our own stem URLs, and the 30 s audio limit,
-- the exact response fields of each tool (parsed defensively below).
+Checked against the live server (see services/workers/README.md, "SATIE against the live
+server"): the satie.scene/v1 manifest, the DSL, the check/audit/realize fields, and that our
+stems come back as `provided` samples at 0 cents. SATIE's runtime loads every sample from
+the `url` we give, so the stems must be reachable by the viewer. With
+SATIE_UPLOAD_STEMS=true the stems are also uploaded (satie_asset with a clipPath), which
+SATIE keeps as provided samples; its listening review (satie_listen) needs a paid plan.
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import time
@@ -49,6 +52,8 @@ class SoundscapeRequest:
     bounds_min: list[float]
     bounds_max: list[float]
     mood_prompt: str | None = None
+    # Reads a storage key (the stem WAVs), for uploading the recordings to SATIE.
+    read_bytes: Callable[[str], bytes] | None = None
 
 
 @dataclass
@@ -142,6 +147,9 @@ class SatieConfig:
     # are private, so don't, unless asked ("private" needs a paid plan).
     save_soundscapes: str = "off"
     world: str = "memoryscapes"
+    # Upload the stems to SATIE (kept there as provided samples, and for training on the
+    # Free plan). Playback doesn't need it: the runtime loads each sample from its url.
+    upload_recordings: bool = False
     poll_attempts: int = 20
     poll_interval_s: float = 15.0
 
@@ -267,6 +275,38 @@ def realized_violations(realize: dict[str, Any], samples: dict[str, Any]) -> lis
     return out
 
 
+def recording_keys(request: SoundscapeRequest) -> dict[str, str]:
+    """Clip name -> storage key of the WAV it plays."""
+    keys = {s.clip: s.source.stem_key for s in request.sources}
+    keys["memory/ambient"] = request.ambient_key
+    return keys
+
+
+def clip_path(clip: str) -> str:
+    """The key a clip has in samples.json (`Audio/` + its name), which satie_asset uses."""
+    return f"Audio/{clip}"
+
+
+MAX_AUDIO_UPLOAD = 16 * 1024 * 1024  # satie_asset kind "audio"
+
+
+def encode_for_upload(wav: bytes, max_bytes: int = MAX_AUDIO_UPLOAD) -> tuple[bytes, str]:
+    """The WAV as is when it fits SATIE's audio limit, else MP3 (libsndfile 1.1+, which
+    soundfile's wheels bundle). Not OGG: libsndfile's Vorbis encoder crashes the process
+    on long in-memory files."""
+    if len(wav) <= max_bytes:
+        return wav, "audio/wav"
+    import soundfile as sf
+
+    audio, sr = sf.read(io.BytesIO(wav), dtype="float32")
+    buf = io.BytesIO()
+    sf.write(buf, audio, sr, format="MP3")
+    data = buf.getvalue()
+    if len(data) > max_bytes:
+        raise SatieError(f"{len(data) / 1e6:.1f} MB even as MP3, over SATIE's {max_bytes / 1e6:.0f} MB limit")
+    return data, "audio/mpeg"
+
+
 def samples_map(request: SoundscapeRequest) -> dict[str, str]:
     m = {s.clip: s.url for s in request.sources}
     m["memory/ambient"] = request.ambient_url
@@ -297,6 +337,12 @@ def _http_get_json(url: str) -> dict[str, Any]:
         return json.loads(resp.read())
 
 
+def _http_put(url: str, data: bytes, content_type: str) -> None:
+    req = urllib.request.Request(url, data=data, method="PUT", headers={"Content-Type": content_type})
+    with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310 (signed URL from SATIE)
+        resp.read()
+
+
 class SatieMcpProvider:
     name = "satie"
 
@@ -306,11 +352,13 @@ class SatieMcpProvider:
         cfg: SatieConfig = SatieConfig(),
         http_get_json: Callable[[str], dict[str, Any]] = _http_get_json,
         sleep: Callable[[float], None] = time.sleep,
+        http_put: Callable[[str, bytes, str], None] = _http_put,
     ) -> None:
         self.transport = transport
         self.cfg = cfg
         self.http_get_json = http_get_json
         self.sleep = sleep
+        self.http_put = http_put
 
     def generate(self, request: SoundscapeRequest) -> SoundscapeResult:
         raw: dict[str, Any] = {}
@@ -361,6 +409,8 @@ class SatieMcpProvider:
         if not quote_id:
             raise SatieError("satie_audit_scene returned no quoteId (audit failed?)")
 
+        if self.cfg.upload_recordings:  # only once the script is known to be original-only
+            raw["uploads"] = self._upload_recordings(request, notes)
         realize = self._realize(request, script, quote_id)
         raw["realize"] = realize
         samples_url = _get(realize, "samplesUrl", "samples_url")
@@ -392,6 +442,29 @@ class SatieMcpProvider:
             raw=raw,
             notes=notes,
         )
+
+    def _upload_recordings(self, request: SoundscapeRequest, notes: list[str]) -> dict[str, Any]:
+        """satie_asset begin -> PUT -> finalize for each recording, under its samples.json
+        key. A failed upload is a note: playback doesn't depend on it."""
+        if request.read_bytes is None:
+            notes.append("recordings not uploaded to SATIE: no storage reader given")
+            return {}
+        call = self.transport.call_tool
+        out: dict[str, Any] = {}
+        for clip, key in recording_keys(request).items():
+            path = clip_path(clip)
+            try:
+                data, media = encode_for_upload(request.read_bytes(key))
+                begin = call("satie_asset", {"action": "begin", "kind": "audio", "clipPath": path})
+                if not begin.get("signedUrl") or not begin.get("uploadId"):
+                    raise SatieError("satie_asset begin returned no signedUrl/uploadId")
+                self.http_put(begin["signedUrl"], data, media)
+                done = call("satie_asset", {"action": "finalize", "kind": "audio",
+                                            "uploadId": begin["uploadId"], "clipPath": path})
+                out[clip] = {"audioId": done.get("audioId"), "clipPath": path, "bytes": len(data), "type": media}
+            except Exception as exc:  # noqa: BLE001
+                notes.append(f"couldn't upload {clip} to SATIE: {type(exc).__name__}: {exc}")
+        return out
 
     def _realize(self, request: SoundscapeRequest, script: str, quote_id: str) -> dict[str, Any]:
         # Same script -> same requestKey, so a retried pipeline run resumes the same
@@ -430,15 +503,16 @@ def get_provider(name: str) -> SoundscapeProvider:
         return StubProvider()
     if name == "satie":
         from memoryscapes_workers.providers.mcp_transport import HttpMcpTransport
+        from memoryscapes_workers.providers.satie_auth import bearer_from_env
 
-        transport = HttpMcpTransport(
-            os.environ.get("SATIE_MCP_URL", "https://www.satie.world/mcp"), os.environ.get("SATIE_MCP_TOKEN")
-        )
+        # SATIE_MCP_TOKEN if set, else the login saved by `memoryscapes-worker satie-login`.
+        transport = HttpMcpTransport(os.environ.get("SATIE_MCP_URL", "https://www.satie.world/mcp"), bearer_from_env())
         cfg = SatieConfig(
             max_cents=int(os.environ.get("SATIE_MAX_CENTS", "0")),
             allow_generation=os.environ.get("SATIE_ALLOW_GENERATION", "false").lower() == "true",
             save_soundscapes=os.environ.get("SATIE_SAVE_SOUNDSCAPES", "off"),
             world=os.environ.get("SATIE_WORLD", "memoryscapes"),
+            upload_recordings=os.environ.get("SATIE_UPLOAD_STEMS", "false").lower() == "true",
         )
         return SatieMcpProvider(transport, cfg)
     raise ValueError(f"Unknown soundscape provider: {name}")

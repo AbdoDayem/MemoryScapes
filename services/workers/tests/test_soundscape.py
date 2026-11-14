@@ -1,4 +1,8 @@
+import io
+
+import numpy as np
 import pytest
+import soundfile as sf
 
 from memoryscapes_workers.models import LocalizedSource, StemsIndex
 from memoryscapes_workers.providers.mcp_transport import McpError, parse_tool_result
@@ -6,11 +10,13 @@ from memoryscapes_workers.providers.soundscape import (
     SatieConfig,
     SatieMcpProvider,
     StubProvider,
+    SatieError,
     build_brief,
     build_scene_manifest,
+    encode_for_upload,
 )
 from memoryscapes_workers.stages import soundscape
-from memoryscapes_workers.storage import read_json, write_json
+from memoryscapes_workers.storage import read_json, write_json, write_wav
 
 PLACED = LocalizedSource(
     "s1_birdsong", "birdsong", "event", "mem_test/separate/stems/s1_birdsong.wav",
@@ -69,6 +75,11 @@ class FakeSatie:
             return {"quoteId": "q_1"}
         if name == "satie_realize":
             return self.realize.pop(0)
+        if name == "satie_asset" and args["action"] == "begin":  # shapes seen live, 2026-11-14
+            n = sum(1 for c, a in self.calls if c == "satie_asset" and a["action"] == "begin") - 1
+            return {"uploadId": f"up-{n}", "signedUrl": f"https://storage.example/pending/up-{n}?token=t", "maxBytes": 16777216}
+        if name == "satie_asset" and args["action"] == "finalize":
+            return {"audioId": f"{args['uploadId']}.wav", "provided": {"clipPath": args["clipPath"]}}
         raise AssertionError(name)
 
 
@@ -227,3 +238,92 @@ def test_parse_tool_result_variants():
     assert parse_tool_result(None, ["plain words"], False) == {"text": "plain words"}
     with pytest.raises(McpError):
         parse_tool_result(None, ["boom"], True)
+
+
+def _write_stems(ctx):
+    tone = (0.1 * np.sin(np.linspace(0, 440 * 2 * np.pi, 16000))).astype(np.float32)
+    for key in (PLACED.stem_key, DIFFUSE.stem_key, ctx.key("separate", "ambient.wav")):
+        write_wav(ctx.storage, key, np.stack([tone, tone]), 16000)
+
+
+def test_satie_uploads_each_recording_under_its_samples_key(ctx):
+    _write_inputs(ctx)
+    _write_stems(ctx)
+    fake, puts = FakeSatie(), []
+    provider = SatieMcpProvider(fake, SatieConfig(upload_recordings=True), http_get_json=lambda url: PROVIDED,
+                                sleep=lambda s: None, http_put=lambda url, data, ctype: puts.append((url, data, ctype)))
+    scene = soundscape.run(ctx, provider=provider, fallback=None)
+
+    names = [n for n, _ in fake.calls]
+    first_asset, realize = names.index("satie_asset"), names.index("satie_realize")
+    assert names.index("satie_audit_scene") < first_asset and set(names[first_asset:realize]) == {"satie_asset"}
+    begins = [a for n, a in fake.calls if n == "satie_asset" and a["action"] == "begin"]
+    assert {a["clipPath"] for a in begins} == {"Audio/memory/s1_birdsong", "Audio/memory/s2_traffic", "Audio/memory/ambient"}
+    assert all(a["kind"] == "audio" for a in begins)
+    # the stored WAV bytes go to the signed URL as they are (they fit the 16 MB limit)
+    assert puts[0] == ("https://storage.example/pending/up-0?token=t", ctx.storage.read_bytes(PLACED.stem_key), "audio/wav")
+    raw = read_json(ctx.storage, ctx.key("soundscape", "satie/raw.json"))
+    assert raw["uploads"]["memory/s1_birdsong"]["audioId"] == "up-0.wav"
+    assert "token" not in json_dumps(raw["uploads"])  # signed upload URLs aren't kept
+    assert scene["provider"]["notes"] == []
+
+
+def json_dumps(value):
+    import json
+
+    return json.dumps(value)
+
+
+def test_a_failed_upload_is_a_note_and_the_soundscape_still_realizes(ctx):
+    _write_inputs(ctx)
+    _write_stems(ctx)
+
+    def broken_put(url, data, ctype):
+        raise OSError("connection reset")
+
+    fake = FakeSatie()
+    provider = SatieMcpProvider(fake, SatieConfig(upload_recordings=True), http_get_json=lambda url: PROVIDED,
+                                sleep=lambda s: None, http_put=broken_put)
+    scene = soundscape.run(ctx, provider=provider, fallback=None)
+    assert scene["provider"]["name"] == "satie"
+    assert sum("couldn't upload" in n for n in scene["provider"]["notes"]) == 3
+
+
+def test_recordings_are_not_uploaded_by_default_or_when_refused(ctx):
+    _write_inputs(ctx)
+    _write_stems(ctx)
+    fake = FakeSatie()
+    soundscape.run(ctx, provider=_satie(fake))
+    assert "satie_asset" not in [n for n, _ in fake.calls]
+
+    gen = "loop gen birdsong\n    at s1_birdsong\n" + ORIGINAL_SCRIPT
+    refused = FakeSatie(compose_scripts=[gen, gen], checks=[report(takes=1)])
+    scene = soundscape.run(ctx, provider=_satie(refused, upload_recordings=True))
+    assert scene["provider"]["name"] == "stub"  # refused, fell back
+    assert "satie_asset" not in [n for n, _ in refused.calls]
+
+
+def test_long_recordings_are_uploaded_as_mp3():
+    sr = 48000
+    tone = (0.1 * np.sin(np.linspace(0, 440 * 2 * np.pi * 3, 3 * sr))).astype(np.float32)
+    buf = io.BytesIO()
+    sf.write(buf, np.stack([tone, tone], axis=1), sr, format="WAV", subtype="PCM_16")
+    wav = buf.getvalue()
+
+    assert encode_for_upload(wav) == (wav, "audio/wav")
+    data, ctype = encode_for_upload(wav, max_bytes=len(wav) - 1)
+    assert ctype == "audio/mpeg" and len(data) < len(wav) / 4
+    audio, rate = sf.read(io.BytesIO(data))
+    assert rate == sr and abs(len(audio) - 3 * sr) < sr // 10
+    with pytest.raises(SatieError):
+        encode_for_upload(wav, max_bytes=1000)
+
+
+def test_satie_gets_stem_urls_the_viewer_can_fetch(ctx, monkeypatch):
+    _write_inputs(ctx)
+    monkeypatch.delenv("PUBLIC_API_URL", raising=False)
+    assert soundscape.build_request(ctx).sources[0].url.startswith("file://")
+    monkeypatch.setenv("PUBLIC_API_URL", "https://memories.example.org/")
+    request = soundscape.build_request(ctx)
+    assert request.sources[0].url == "https://memories.example.org/memories/mem_test/files/separate/stems/s1_birdsong.wav"
+    assert request.ambient_url == "https://memories.example.org/memories/mem_test/files/separate/ambient.wav"
