@@ -39,7 +39,7 @@ from memoryscapes_workers.visual.splat_post import DEFAULT_LODS, CleanupConfig, 
 from memoryscapes_workers.visual.train import TRAINER_PRESETS, TrainConfig, TrainerName
 
 STAGE = "splat"
-VERSION = "2"  # 2: docs/SPLAT_OUTPUTS.md layout (meta, metrics, renders, lods/); new rasterizer
+VERSION = "3"  # 2: gsplat-matching rasterizer; 3: docs/SPLAT_OUTPUTS.md layout (meta, metrics, renders, lods/)
 
 
 class SplatConfig(BaseModel):

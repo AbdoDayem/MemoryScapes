@@ -38,7 +38,7 @@ from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.stagekit import StageError, StageIO, run_stage, write_json
 
 STAGE = "poses"
-VERSION = "2"  # 2: cameras.json in the audio-stage contract format, points3d(_rgb).npy
+VERSION = "3"  # 2: audio-stage contract (cameras.json, points3d.npy); 3: points3d_rgb.npy
 
 CAPTURE_HINT = (
     "Move slowly and steadily, walk through the space or orbit the subject instead of "
