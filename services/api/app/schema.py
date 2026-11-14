@@ -16,7 +16,9 @@ from sqlalchemy import (
     Index,
     Integer,
     JSON,
+    LargeBinary,
     MetaData,
+    PrimaryKeyConstraint,
     String,
     Table,
     Text,
@@ -107,4 +109,22 @@ soundscapes = Table(
     Column("notes", JSON),  # the provider's notes (list of strings)
     Column("created_at", UTCDateTime, nullable=False),
     Column("updated_at", UTCDateTime, nullable=False),
+)
+
+# Every file the viewer needs for a memory, with its bytes: the manifest and everything it
+# references (splat levels, walk path, sound stems, SATIE script and samples). Pipeline
+# working files (upload, frames, training output) aren't part of a memory and stay out.
+# Also new, so it too needs no migration.
+memory_files = Table(
+    "memory_files",
+    metadata,
+    Column("memory_id", String(64), ForeignKey("memories.id", ondelete="CASCADE"), nullable=False),
+    Column("key", String(255), nullable=False),  # path inside the memory, as the manifest names it
+    Column("kind", String(24), nullable=False),  # manifest | splat | path | stem | ambient | satie_script | satie_samples | other
+    Column("content_type", String(64), nullable=False),
+    Column("bytes", Integer, nullable=False),
+    Column("sha256", String(64), nullable=False),
+    Column("data", LargeBinary, nullable=False),
+    Column("updated_at", UTCDateTime, nullable=False),
+    PrimaryKeyConstraint("memory_id", "key", name="memory_files_pk"),
 )

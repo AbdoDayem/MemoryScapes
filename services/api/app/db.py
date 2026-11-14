@@ -9,6 +9,8 @@ touches this file (and ``DATABASE_URL``).
     upsert_jobs / list_jobs        per-stage results copied from job/status.json
     upsert_soundscape / get_soundscape / delete_soundscape / list_soundscapes
                                    the SATIE soundscape a run produced (app/soundscapes.py)
+    put_file / get_file / list_files / delete_files
+                                   a memory's files, with their bytes (app/memory_files.py)
     list_in_bbox                   memories inside a map rectangle, for the globe
     blur_location                  round a location to about 100 m
 """
@@ -29,7 +31,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
 from app.models import MemoryStatus, Visibility
-from app.schema import jobs, memories, metadata, soundscapes, users
+from app.schema import jobs, memories, memory_files, metadata, soundscapes, users
 from app.settings import get_settings
 
 _engine: Engine | None = None
@@ -310,6 +312,47 @@ def list_soundscapes(provider: str | None = None) -> list[dict[str, Any]]:
         query = query.where(soundscapes.c.provider == provider)
     with get_engine().connect() as conn:
         return [_row(r) for r in conn.execute(query)]
+
+
+# ---------------------------------------------------------------------------- memory files
+
+_FILE_INFO = [memory_files.c[name] for name in ("memory_id", "key", "kind", "content_type",
+                                                "bytes", "sha256", "updated_at")]
+
+
+def put_file(memory_id: str, key: str, kind: str, content_type: str, data: bytes, sha256: str) -> None:
+    """Store (or replace) one of the memory's files."""
+    values = {"kind": kind, "content_type": content_type, "bytes": len(data), "sha256": sha256,
+              "data": data, "updated_at": _now()}
+    match = and_(memory_files.c.memory_id == memory_id, memory_files.c.key == key)
+    with get_engine().begin() as conn:
+        if conn.execute(update(memory_files).where(match).values(**values)).rowcount == 0:
+            conn.execute(insert(memory_files).values(memory_id=memory_id, key=key, **values))
+
+
+def get_file(memory_id: str, key: str) -> dict[str, Any] | None:
+    """One file, with its bytes in ``data``."""
+    query = select(memory_files).where(and_(memory_files.c.memory_id == memory_id, memory_files.c.key == key))
+    with get_engine().connect() as conn:
+        return _row(conn.execute(query).first())
+
+
+def list_files(memory_id: str) -> list[dict[str, Any]]:
+    """The memory's files without their bytes (key, kind, content_type, bytes, sha256)."""
+    query = select(*_FILE_INFO).where(memory_files.c.memory_id == memory_id).order_by(memory_files.c.key)
+    with get_engine().connect() as conn:
+        return [_row(r) for r in conn.execute(query)]
+
+
+def delete_files(memory_id: str, keys: list[str] | None = None) -> int:
+    """Remove the named files (all of the memory's when ``keys`` is None). Returns how many."""
+    condition = memory_files.c.memory_id == memory_id
+    if keys is not None:
+        if not keys:
+            return 0
+        condition = and_(condition, memory_files.c.key.in_(keys))
+    with get_engine().begin() as conn:
+        return conn.execute(delete(memory_files).where(condition)).rowcount
 
 
 def _from_unix(value: float | None) -> datetime | None:

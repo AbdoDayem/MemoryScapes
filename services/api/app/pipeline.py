@@ -7,8 +7,8 @@ The pipeline itself belongs to the workers (services/workers). This module only:
    (the same command the debugger uses, tools/debugger/server/jobs.ts),
 2. reads the progress file it keeps up to date, ``{id}/job/status.json``,
 3. when the run ends, copies the per-stage results into the ``jobs`` table and the
-   soundscape into ``soundscapes`` (app/soundscapes.py), and sets the memory to ``ready``
-   or ``failed``.
+   soundscape into ``soundscapes`` (app/soundscapes.py), stores a ready memory's files in
+   ``memory_files`` (app/memory_files.py), and sets the memory to ``ready`` or ``failed``.
 
 How much of the video is processed is the runner's own default (``--max-seconds``); we
 don't override it. See docs/webapp-plan/backend.md § Starting the pipeline.
@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from app import db, soundscapes
+from app import db, memory_files, soundscapes
 from app.models import MemoryStatus
 from app.settings import REPO_DIR, get_settings
 from app.storage import LocalStore, get_store
@@ -134,6 +134,10 @@ def finish(memory_id: str, returncode: int) -> str:
         log.exception("could not store the soundscape of %s", memory_id)
 
     if status and status.get("state") == "done" and get_store().exists(f"{memory_id}/{MANIFEST}"):
+        try:  # the memory's files (manifest, splat, path, sound) into the database
+            memory_files.store(memory_id)
+        except Exception:  # noqa: BLE001
+            log.exception("could not store the files of %s", memory_id)
         db.set_status(memory_id, MemoryStatus.ready)
         return MemoryStatus.ready.value
 

@@ -27,14 +27,17 @@ Settings:
 
 ## What lives where
 
-**Videos are never stored in the database.** Big files go in file storage, and the database
-holds facts about them. The memory id links the two.
+**Videos are never stored in the database.** Pipeline working files (the upload, frames,
+training output) stay in file storage. A finished memory, meaning its manifest and every file
+the manifest names, is also copied into the database (`memory_files`), so the database holds
+the whole memory. The memory id links the two.
 
 | Data | Stored in | Format |
 |---|---|---|
 | Uploaded video and audio, frames, 3D scene, sound tracks, progress | File storage, `services/workers/data/storage/{id}/` | Ordinary files (`.mp4`/`.mov`, `.wav`, `.jpg`, `.ply`, `.json`) |
 | Owner, title, status, location, dates | Database | Rows |
 | The SATIE soundscape a run produced: script, samples, host map, SATIE ids, spend | Database (`soundscapes`), copied from `soundscape/` when a run ends; the files stay, and the viewer reads those | Rows (text and JSON) |
+| The finished memory: manifest, splat levels, walk path, sound stems, SATIE script and samples | Database (`memory_files`, with their bytes), copied when a run ends ready; the files stay, and the API serves those | Rows (bytes + size + SHA-256) |
 
 File layout and storage tech: see [`storage.md`](storage.md). File paths are never stored in
 the database, because they follow from the id.
@@ -113,6 +116,28 @@ SATIE's full answers (`soundscape/satie/raw.json`, about 50 KB) stay a file: the
 debugging. A memory made with the worker CLI has no `memories` row; give it one and store its
 soundscape with `python -m app.soundscapes <id> --register`.
 
+### `memory_files`
+Every file the viewer needs for a memory, with its bytes: `publish/manifest.json` plus
+everything the manifest names. Copied by `app/memory_files.py` when a run finishes ready
+(`pipeline.finish`). Unchanged files (same SHA-256) aren't rewritten, and files the manifest
+no longer names are removed. Like `soundscapes`, it's a new table, so it needs no migration
+and changes no API response.
+
+| Column | Type | Notes |
+|---|---|---|
+| `memory_id` | text, → `memories.id`, delete cascades | Primary key with `key` |
+| `key` | text | The path inside the memory, as the manifest names it (`splat/lods/lod0.spz`) |
+| `kind` | text | `manifest` `splat` `path` `stem` `ambient` `satie_script` `satie_samples` `other` |
+| `content_type` | text | `audio/wav`, `application/json`, ... |
+| `bytes`, `sha256` | integer, text | Size and checksum |
+| `data` | blob | The file |
+| `updated_at` | datetime (UTC) | |
+
+The Canada test memory is 15 files and 142 MB, mostly 16-bit WAV stems (about 17 MB each).
+Compressing stems for delivery would shrink that a lot. `python -m app.memory_files store |
+verify | restore <id>` copies a memory in, checks the database against storage, or writes the
+files back out (`store --register` for memories made with the worker CLI).
+
 Not yet: `memory_assets` and `reports` from `init.sql`. Add them when versioned outputs and
 moderation are built.
 
@@ -165,6 +190,7 @@ serves them from storage alone (`backend.md`).
 | `set_status(id, status, error=None)` | Status change, bumps `updated_at` |
 | `upsert_jobs(id, stages: dict)` | Copy the `stages` block of `job/status.json` into `jobs` |
 | `upsert_soundscape(id, record)`, `get_soundscape(id)`, `delete_soundscape(id)`, `list_soundscapes(provider=None)` | The `soundscapes` row; `list_soundscapes("stub")` finds memories to re-run through SATIE |
+| `put_file(id, key, kind, content_type, data, sha256)`, `get_file(id, key)`, `list_files(id)`, `delete_files(id, keys=None)` | `memory_files` rows; `list_files` leaves out the bytes |
 | `list_in_bbox(min_lon, min_lat, max_lon, max_lat, owner_id) -> list[dict]` | Memories with a location inside the box. Handles boxes that cross ±180° by splitting into two ranges. |
 
 Tests use a temporary SQLite file per test (`tmp_path`).
