@@ -125,34 +125,63 @@ class SatieBudgetExceeded(SatieError):
     pass
 
 
+class SatieNotOriginal(SatieError):
+    """The script still used sounds that weren't recorded (generated, synthesized or
+    library audio) after one revision. Nothing is realized."""
+
+
 @dataclass(frozen=True)
 class SatieConfig:
-    max_cents: int = 0  # spend cap per memory; 0 = only free reuse (our stems, library)
+    # Spend cap per memory. Only used when allow_generation is on: an original-only
+    # soundscape reuses our own recordings, which costs nothing, so realize then always
+    # runs with maxCents 0 and anything SATIE would buy is refused.
+    max_cents: int = 0
     allow_generation: bool = False  # may SATIE add sounds that weren't recorded?
     max_extra_voices: int = 3
+    # SATIE saves each soundscape to the account's gallery, public by default. Memories
+    # are private, so don't, unless asked ("private" needs a paid plan).
+    save_soundscapes: str = "off"
+    world: str = "memoryscapes"
     poll_attempts: int = 20
     poll_interval_s: float = 15.0
 
 
 def build_scene_manifest(request: SoundscapeRequest) -> dict[str, Any]:
-    """Hosts are the placed sources, ids equal to our source ids. Metres, +Y up, the
-    world frame unchanged (SATIE: "use the game's coordinates unchanged")."""
-    hosts = [
+    """The satie.scene/v1 manifest (satie://schema/scene). Placed sources are objects,
+    hosted `at` our source ids; every recording is a sample the script plays by name.
+    Metres, +Y up, our world frame unchanged. No rooms: a recorded outdoor place isn't
+    an enclosure, and a room would add reverb the recording already has."""
+    objects = [
         {
             "id": s.source.id,
-            "name": s.source.label,
+            "label": s.source.label,
             "position": s.source.position,
             "motion": "static",
-            "radius": s.source.spread_m,
+            "radiusM": max(float(s.source.spread_m or 0.0), 0.5),
+            "occludes": False,
+            "notes": f"where the recorded {s.source.label} was heard",
         }
         for s in request.sources
         if s.source.position is not None
     ]
+    samples = [
+        {
+            "name": s.clip,
+            "url": s.url,
+            "loop": True,
+            "role": "stationary-texture" if s.source.position is not None else "diffuse-background",
+            "notes": f"recorded {s.source.label}, separated from the original recording",
+        }
+        for s in request.sources
+    ]
+    samples.append({"name": "memory/ambient", "url": request.ambient_url, "loop": True,
+                    "role": "diffuse-background", "notes": "the rest of the original recording"})
     return {
-        "units": "meters",
-        "up": "+y",
-        "hosts": hosts,
-        "rooms": [{"id": "memory", "bounds": {"min": request.bounds_min, "max": request.bounds_max}}],
+        "environment": {"setting": "a real place someone recorded and walked through",
+                        "notes": "Everything audible must come from the supplied recordings."},
+        "listener": "first_person",
+        "objects": objects,
+        "samples": samples,
     }
 
 
@@ -178,11 +207,34 @@ def build_brief(request: SoundscapeRequest, cfg: SatieConfig) -> str:
             "Never replace or cover the recordings."
         )
     else:
-        lines.append("Do not add library or generated sounds. Only the recordings above.")
+        lines.append("Use only the recordings above: every voice plays one of these clips. "
+                     "No `gen`, `synth` or library (`community/`) voices, and nothing added.")
     if request.mood_prompt:
         lines.append(f"Mood: {request.mood_prompt}")
     lines.append("This runs unattended: where you have open questions, use your stated assumptions.")
     return "\n".join(lines)
+
+
+_GEN_OR_SYNTH = re.compile(
+    r"^\s*(?:\d+\s*\*\s*)?(?:(?:loop|oneshot)\s+|on\s+\S+\s+)?(?:gen|synth)\b", re.MULTILINE)
+
+
+def original_only_violations(report: dict[str, Any], script: str, allowed: set[str]) -> list[str]:
+    """Why a script isn't original-only, from satie_check's report and the script text.
+    Empty means every voice plays one of our recordings and realize buys nothing."""
+    out = []
+    takes = int(((report.get("takes") or {}).get("total")) or 0)
+    if takes:
+        out.append(f"{takes} new take(s) SATIE would generate")
+    library = report.get("libraryClips") or []
+    if library:
+        out.append("library recordings: " + ", ".join(map(str, library)))
+    foreign = [c for c in (report.get("clipsToSupply") or []) if c not in allowed]
+    if foreign:
+        out.append("clips that aren't our recordings: " + ", ".join(foreign))
+    if _GEN_OR_SYNTH.search(script):
+        out.append("generated or synthesized voices in the script")
+    return out
 
 
 def samples_map(request: SoundscapeRequest) -> dict[str, str]:
@@ -235,7 +287,7 @@ class SatieMcpProvider:
         notes: list[str] = []
         call = self.transport.call_tool
 
-        raw["inspect"] = inspect = call("satie_inspect_scene", {"scene": build_scene_manifest(request), "unitsPerMeter": 1})
+        raw["inspect"] = inspect = call("satie_inspect_scene", {"scene": build_scene_manifest(request)})
         contract_id = _get(inspect, "contractId", "contract_id")
         if not contract_id:
             raise SatieError("satie_inspect_scene returned no contractId")
@@ -246,16 +298,33 @@ class SatieMcpProvider:
         raw["compose"] = compose = call("satie_compose", {"brief": brief, "contractId": contract_id})
         script = extract_script(compose)
 
-        missing = [c for c in samples_map(request) if c not in script]
-        if missing:
-            revision = "Every recording must be used. Missing clips: " + ", ".join(missing)
+        # One revision at most (the free plan has few compositions a month): it fixes
+        # missing recordings and, unless generation is allowed, anything not recorded.
+        allowed = set(samples_map(request))
+        hosts = [s.source.id for s in request.sources if s.source.position is not None]
+        missing = [c for c in allowed if c not in script]
+        raw["check"] = report = call("satie_check", {"script": script, "hosts": hosts})
+        foreign = [] if self.cfg.allow_generation else original_only_violations(report, script, allowed)
+        if missing or foreign:
+            asks = []
+            if missing:
+                asks.append("Every recording must be used. Missing clips: " + ", ".join(sorted(missing)) + ".")
+            if foreign:
+                asks.append("Use only the supplied recordings. Remove " + "; ".join(foreign) + ".")
             raw["compose_revision"] = compose = call(
-                "satie_compose", {"brief": revision, "contractId": contract_id, "script": script}
+                "satie_compose", {"brief": " ".join(asks), "contractId": contract_id, "script": script}
             )
             script = extract_script(compose)
+            raw["check_revision"] = report = call("satie_check", {"script": script, "hosts": hosts})
             still = [c for c in missing if c not in script]
             if still:
-                notes.append("SATIE script does not use: " + ", ".join(still))
+                notes.append("SATIE script does not use: " + ", ".join(sorted(still)))
+            if not self.cfg.allow_generation:
+                foreign = original_only_violations(report, script, allowed)
+                if foreign:
+                    raise SatieNotOriginal(
+                        "SATIE kept sounds that weren't recorded after a revision (" + "; ".join(foreign)
+                        + "); nothing was realized or bought")
 
         raw["audit"] = audit = call("satie_audit_scene", {"script": script, "contractId": contract_id})
         quote_id = _get(audit, "quoteId", "quote_id")
@@ -291,12 +360,17 @@ class SatieMcpProvider:
         # Same script -> same requestKey, so a retried pipeline run resumes the same
         # paid attempt instead of buying again (SATIE's documented recovery rule).
         request_key = f"{request.memory_id}-{hashlib.sha256(script.encode()).hexdigest()[:16]}"
+        original_only = not self.cfg.allow_generation
         args = {
             "script": script,
-            "maxCents": self.cfg.max_cents,
+            # Original only: our recordings are reused for free, so there's nothing to buy
+            # and any purchase would be a sound that wasn't recorded. Never spend then.
+            "maxCents": 0 if original_only else self.cfg.max_cents,
             "confirm": {"quoteId": quote_id},
             "samples": samples_map(request),
-            "preferLibrary": True,
+            "preferLibrary": not original_only,  # no library stand-ins for our recordings
+            "saveSoundscapes": self.cfg.save_soundscapes,
+            "world": self.cfg.world,
             "requestKey": request_key,
         }
         for _ in range(self.cfg.poll_attempts):
@@ -326,6 +400,8 @@ def get_provider(name: str) -> SoundscapeProvider:
         cfg = SatieConfig(
             max_cents=int(os.environ.get("SATIE_MAX_CENTS", "0")),
             allow_generation=os.environ.get("SATIE_ALLOW_GENERATION", "false").lower() == "true",
+            save_soundscapes=os.environ.get("SATIE_SAVE_SOUNDSCAPES", "off"),
+            world=os.environ.get("SATIE_WORLD", "memoryscapes"),
         )
         return SatieMcpProvider(transport, cfg)
     raise ValueError(f"Unknown soundscape provider: {name}")
