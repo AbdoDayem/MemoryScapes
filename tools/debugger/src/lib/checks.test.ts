@@ -40,6 +40,39 @@ function bundle(over: Partial<MemoryBundle> = {}): MemoryBundle {
 
 const levelOf = (checks: ReturnType<typeof runChecks>, id: string) => checks.find((c) => c.id === id)?.level;
 
+/** Deterministic uniform numbers in [0, 1). */
+function rng(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32);
+}
+
+/** A non-repeating scene: random points on a ground plane, a back wall and a sphere. */
+function scene(n: number, seed = 1): Float32Array {
+  const r = rng(seed);
+  const pts: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const kind = i % 3;
+    if (kind === 0) pts.push(-5 + 10 * r(), 0, 10 * r());
+    else if (kind === 1) pts.push(-5 + 10 * r(), 4 * r(), 10);
+    else {
+      const u = 2 * r() - 1, th = 2 * Math.PI * r(), q = Math.sqrt(1 - u * u);
+      pts.push(2 + 1.2 * q * Math.cos(th), 1.2 + 1.2 * u, 4 + 1.2 * q * Math.sin(th));
+    }
+  }
+  return new Float32Array(pts);
+}
+
+/** What a trained splat looks like: dense on the surfaces, filling between them, plus sky. */
+function trainedSplat(seed = 2): Float32Array {
+  const r = rng(seed);
+  const surface = scene(30000, seed);
+  const between = Array.from({ length: 6000 * 3 }, (_, i) => [-5 + 10 * r(), 4 * r(), 10 * r()][i % 3]);
+  const sky = Array.from({ length: 6000 * 3 }, (_, i) => [-40 + 80 * r(), 8 + 30 * r(), -30 + 80 * r()][i % 3]);
+  return new Float32Array([...surface, ...between, ...sky]);
+}
+
+const transform = (xyz: Float32Array, scale: number, offset: number[]) => xyz.map((v, i) => v * scale + offset[i % 3]);
+
 describe("compareClouds", () => {
   it("recognises the same cloud", () => {
     const g = grid();
@@ -51,8 +84,20 @@ describe("compareClouds", () => {
     const g = grid();
     const a = compareClouds(g, splatFrom(g, 0.5).positions);
     expect(a.scaleRatio).toBeCloseTo(0.5, 1);
-    const b = compareClouds(g, splatFrom(g, 1, [0, 0, 3]).positions);
+    // A regular grid repeats under a shift, so use a scene that doesn't.
+    const pts = scene(3000);
+    const b = compareClouds(pts, transform(pts, 1, [0, 0, 3]));
+    expect(b.scaleRatio).toBeCloseTo(1, 1);
     expect(b.offset[2]).toBeCloseTo(3, 0);
+  });
+  it("ignores sky and fill gaussians that reach past the pose points", () => {
+    const a = compareClouds(scene(3000), trainedSplat());
+    expect(a.scaleRatio).toBeCloseTo(1, 1);
+    expect(Math.hypot(...a.offset)).toBeLessThan(0.3);
+  });
+  it("finds the scale of a dense splat, where every pose point still has a gaussian nearby", () => {
+    const a = compareClouds(scene(3000), transform(trainedSplat(), 0.5, [0, 0, 0]));
+    expect(a.scaleRatio).toBeCloseTo(0.5, 1);
   });
 });
 
@@ -61,6 +106,11 @@ describe("runChecks", () => {
     const checks = runChecks(bundle(), splatFrom(grid()));
     expect(checks.filter((c) => c.level === "fail" || c.level === "warn")).toEqual([]);
     expect(levelOf(checks, "splat.align")).toBe("ok");
+  });
+
+  it("passes a trained splat that reaches into the sky", () => {
+    const view: GaussianView = { ...splatFrom(new Float32Array(0)), count: 0, positions: trainedSplat() };
+    expect(levelOf(runChecks(bundle({ points: scene(3000) }), view), "splat.align")).toBe("ok");
   });
 
   it("fails a splat at half scale and names the scale", () => {

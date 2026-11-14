@@ -33,6 +33,54 @@ pytest
 The visual stages also need the `ffmpeg` binary. Tests that need ffmpeg, OpenCV, pycolmap or
 torch skip themselves when those aren't installed (as in CI).
 
+### GPU splat training on Windows
+
+`pip install -e ".[visual]"` installs gsplat, but on Windows it doesn't train out of the box:
+- gsplat's prebuilt Windows wheels are for Python 3.10 only, and this package needs 3.11+.
+- The PyPI package compiles its CUDA kernels the first time they're used. With gsplat 1.5.3 on
+  Windows that fails with `ninja: error: loading 'build.ninja': The system cannot find the path
+  specified`, because it deletes its own build folder before building.
+
+So build gsplat's CUDA extension once, from source. It then loads directly with no compiler
+needed at run time, and `splat.trainer=auto` picks `gsplat`. Tested with an RTX 4070, CUDA 12.8,
+torch 2.11 and Python 3.11.
+
+1. Install the toolchain. Pick a CUDA toolkit with the same major.minor as your torch build
+   (`python -c "import torch; print(torch.version.cuda)"`):
+
+   ```bash
+   winget install Gyan.FFmpeg
+   winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+   winget install Nvidia.CUDA -v 12.8
+   ```
+
+2. Install CUDA torch before the extras, so pip doesn't pull a CPU build:
+
+   ```bash
+   .venv/Scripts/python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+   .venv/Scripts/python -m pip install -e ".[dev,visual,audio,satie]"
+   ```
+
+3. Build gsplat from source inside the MSVC + CUDA environment. [`cuda_env.cmd`](cuda_env.cmd)
+   finds both and targets RTX 40-series GPUs (`TORCH_CUDA_ARCH_LIST=8.9`). Set
+   `TORCH_CUDA_ARCH_LIST` yourself for other cards, e.g. `8.6` for RTX 30. The build takes a few
+   minutes. Run it from `cmd`, or through `cmd /c` from PowerShell:
+
+   ```bash
+   .venv/Scripts/python -m pip install wheel setuptools ninja
+   cmd /c "cuda_env.cmd .venv\Scripts\python -m pip install --no-build-isolation --no-binary gsplat --force-reinstall --no-deps gsplat==1.5.3"
+   ```
+
+4. Check it:
+
+   ```bash
+   .venv/Scripts/python -c "from gsplat import csrc; from memoryscapes_workers.visual.train import detect_trainer; print(detect_trainer())"   # gsplat
+   memoryscapes-worker demo
+   ```
+
+On an RTX 4070, the default 30,000 MCMC steps (1.5M gaussians) take about 13 minutes for 40–50
+keyframes at 640 px. Re-run step 3 after upgrading torch or gsplat.
+
 ## Running stages locally
 
 `memoryscapes-worker` (or `python -m memoryscapes_workers`) runs stages against local storage:

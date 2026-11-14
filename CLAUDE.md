@@ -28,6 +28,7 @@ cd services/api && pip install -e ".[dev]" && uvicorn app.main:app --reload
 cd services/workers && python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev]"   # core + tests
 cd services/workers && .venv/Scripts/python -m pytest                                            # worker tests
 cd services/workers && pip install -e ".[audio,visual,satie]"   # model backends + SATIE MCP client
+# Windows + NVIDIA: gsplat must be built from source once (cuda_env.cmd); see services/workers/README.md "GPU splat training on Windows"
 cd services/workers && memoryscapes-worker demo                  # synthetic video -> ingest -> poses -> splat (local)
 cd services/workers && memoryscapes-worker satie-login           # once per server: SATIE sign-in, saved to .satie/ (git-ignored)
 cd services/workers && memoryscapes-worker run demo --stages publish   # manifest; then the API + dev:web -> /memories/demo

@@ -51,14 +51,6 @@ function sample(xyz: Float32Array, max: number): Float32Array {
   return out;
 }
 
-export function trimmedMean(values: Float32Array, trim = 0.1): number {
-  const s = Float64Array.from(values).sort();
-  const lo = Math.floor(s.length * trim), hi = Math.max(lo + 1, Math.ceil(s.length * (1 - trim)));
-  let sum = 0;
-  for (let i = lo; i < hi; i++) sum += s[i];
-  return sum / (hi - lo);
-}
-
 function axis(xyz: Float32Array, k: number): Float32Array {
   const out = new Float32Array(xyz.length / 3);
   for (let i = 0; i < out.length; i++) out[i] = xyz[i * 3 + k];
@@ -67,13 +59,136 @@ function axis(xyz: Float32Array, k: number): Float32Array {
 
 export interface Alignment {
   medianGapM: number; // median distance from a pose point to the nearest splat centre
-  scaleRatio: number; // splat extent / poses extent
-  offset: Vec3; // splat median - poses median
+  // The similarity that best lines the splat up with the pose points: the splat looks like
+  // the poses scaled by scaleRatio about their median point, then shifted by offset.
+  scaleRatio: number;
+  offset: Vec3;
+  fitGapM: number; // median gap after that fit
   extentM: number; // poses extent, for judging the gap
 }
 
-/** How well two point sets (pose points and splat centres) occupy the same space. */
+/**
+ * Distance from any point to the nearest of a set of seeds, precomputed on a voxel grid
+ * (exact squared EDT, Felzenszwalb & Huttenlocher) so the fit below can score thousands of
+ * candidate transforms cheaply. Near the seeds (where the median gap is decided) the
+ * distance is exact, from the seeds bucketed in the surrounding voxels; further out it's
+ * the grid's estimate, accurate to about one voxel.
+ */
+class DistanceField {
+  private readonly d: Float32Array;
+  private readonly dims: [number, number, number];
+  private readonly start: Int32Array; // seeds of voxel v: sorted[3 * start[v] .. 3 * start[v + 1])
+  private readonly sorted: Float32Array; // seed coordinates, grouped by voxel in index order
+  constructor(private readonly lo: Vec3, private readonly h: number, hi: Vec3, seeds: Float32Array) {
+    this.dims = [0, 1, 2].map((k) => Math.max(1, Math.ceil((hi[k] - lo[k]) / h) + 1)) as [number, number, number];
+    const [nx, ny, nz] = this.dims;
+    const f = new Float64Array(nx * ny * nz).fill(1e20);
+    const cellOf = new Int32Array(seeds.length / 3).fill(-1);
+    this.start = new Int32Array(nx * ny * nz + 1);
+    for (let j = 0; j < seeds.length; j += 3) {
+      const ix = Math.round((seeds[j] - lo[0]) / h), iy = Math.round((seeds[j + 1] - lo[1]) / h), iz = Math.round((seeds[j + 2] - lo[2]) / h);
+      if (ix >= 0 && iy >= 0 && iz >= 0 && ix < nx && iy < ny && iz < nz) {
+        const v = (iz * ny + iy) * nx + ix;
+        f[v] = 0;
+        cellOf[j / 3] = v;
+        this.start[v + 1]++;
+      }
+    }
+    for (let v = 0; v < nx * ny * nz; v++) this.start[v + 1] += this.start[v];
+    this.sorted = new Float32Array(this.start[nx * ny * nz] * 3);
+    const fill = this.start.slice(0, -1);
+    cellOf.forEach((v, s) => {
+      if (v >= 0) this.sorted.set(seeds.subarray(s * 3, s * 3 + 3), 3 * fill[v]++);
+    });
+    const n = Math.max(nx, ny, nz);
+    const line = new Float64Array(n), out = new Float64Array(n), v = new Int32Array(n), z = new Float64Array(n + 1);
+    const pass = (len: number, count: number, index: (line: number, i: number) => number) => {
+      for (let l = 0; l < count; l++) {
+        for (let i = 0; i < len; i++) line[i] = f[index(l, i)];
+        edt1d(line, len, out, v, z);
+        for (let i = 0; i < len; i++) f[index(l, i)] = out[i];
+      }
+    };
+    pass(nx, ny * nz, (l, i) => l * nx + i);
+    pass(ny, nx * nz, (l, i) => (Math.floor(l / nx) * ny + i) * nx + (l % nx));
+    pass(nz, nx * ny, (l, i) => (i * ny + Math.floor(l / nx)) * nx + (l % nx));
+    this.d = Float32Array.from(f, (x) => Math.sqrt(x) * h);
+  }
+
+  /** Distance to the nearest seed; outside the grid, plus the distance to the grid. */
+  at(x: number, y: number, z: number): number {
+    const { h, lo } = this;
+    const [nx, ny, nz] = this.dims;
+    const rx = Math.round((x - lo[0]) / h), ry = Math.round((y - lo[1]) / h), rz = Math.round((z - lo[2]) / h);
+    const cx = rx < 0 ? 0 : rx >= nx ? nx - 1 : rx;
+    const cy = ry < 0 ? 0 : ry >= ny ? ny - 1 : ry;
+    const cz = rz < 0 ? 0 : rz >= nz ? nz - 1 : rz;
+    const approx = this.d[(cz * ny + cy) * nx + cx];
+    if (cx !== rx || cy !== ry || cz !== rz) return approx + h * Math.hypot(rx - cx, ry - cy, rz - cz);
+    if (approx > 3 * h) return approx;
+    // Exact: the nearest seed is within about approx + one voxel of this voxel's centre.
+    const r = Math.ceil(approx / h) + 1;
+    const pts = this.sorted, start = this.start;
+    let best = Infinity;
+    for (let iz = Math.max(0, cz - r); iz <= Math.min(nz - 1, cz + r); iz++)
+      for (let iy = Math.max(0, cy - r); iy <= Math.min(ny - 1, cy + r); iy++) {
+        const row = (iz * ny + iy) * nx;
+        const end = start[row + Math.min(nx - 1, cx + r) + 1];
+        for (let q = start[row + Math.max(0, cx - r)] * 3; q < end * 3; q += 3) {
+          const dx = x - pts[q], dy = y - pts[q + 1], dz = z - pts[q + 2];
+          const d = dx * dx + dy * dy + dz * dz;
+          if (d < best) best = d;
+        }
+      }
+    return best < Infinity ? Math.sqrt(best) : approx;
+  }
+}
+
+function edt1d(f: Float64Array, n: number, out: Float64Array, v: Int32Array, z: Float64Array): void {
+  let k = 0;
+  v[0] = 0;
+  z[0] = -1e30;
+  z[1] = 1e30;
+  const cross = (q: number, r: number) => (f[q] + q * q - (f[r] + r * r)) / (2 * q - 2 * r);
+  for (let q = 1; q < n; q++) {
+    let s = cross(q, v[k]);
+    while (s <= z[k]) s = cross(q, v[--k]);
+    k++;
+    v[k] = q;
+    z[k] = s;
+    z[k + 1] = 1e30;
+  }
+  k = 0;
+  for (let q = 0; q < n; q++) {
+    while (z[k + 1] < q) k++;
+    out[q] = (q - v[k]) ** 2 + f[v[k]];
+  }
+}
+
+/**
+ * How well two point sets (pose points and splat centres) occupy the same space.
+ *
+ * Measured from the pose points: each should have a gaussian close by. The other direction
+ * is meaningless, because a trained splat legitimately reaches far past the SfM points (the
+ * sky, distant walls) and fills the space between them. For the same reason, comparing
+ * extents or centroids reports scale errors on a correctly aligned splat. So scale and
+ * offset come from a fit instead: the scale and shift of the pose points that minimise
+ * their median gap to the splat, with the gap in pose metres.
+ *
+ * The fit takes about a second on a real splat, so results are cached per pair of arrays
+ * (the Checks and Splat tabs both ask for the same one).
+ */
 export function compareClouds(poses: Float32Array, splat: Float32Array): Alignment {
+  let byPoses = alignmentCache.get(splat);
+  if (!byPoses) alignmentCache.set(splat, (byPoses = new WeakMap()));
+  let al = byPoses.get(poses);
+  if (!al) byPoses.set(poses, (al = computeAlignment(poses, splat)));
+  return al;
+}
+
+const alignmentCache = new WeakMap<Float32Array, WeakMap<Float32Array, Alignment>>();
+
+function computeAlignment(poses: Float32Array, splat: Float32Array): Alignment {
   const a = sample(poses, 600);
   const b = sample(splat, 25000);
   const gaps = new Float32Array(a.length / 3);
@@ -87,18 +202,64 @@ export function compareClouds(poses: Float32Array, splat: Float32Array): Alignme
     }
     gaps[i] = Math.sqrt(best);
   }
-  const ext = (xyz: Float32Array) => [0, 1, 2].map((k) => percentile(axis(xyz, k), 95) - percentile(axis(xyz, k), 5));
-  const ea = ext(a), eb = ext(b);
-  const ratios = ea.map((e, k) => (e > 1e-3 ? eb[k] / e : NaN)).filter(Number.isFinite);
-  // Trimmed means over the full clouds: medians of structured (grid-like) clouds jump by
-  // whole grid steps between subsamples, and plain means chase splat floaters.
-  const offset = [0, 1, 2].map((k) => trimmedMean(axis(splat, k)) - trimmedMean(axis(poses, k))) as Vec3;
-  return {
-    medianGapM: percentile(gaps, 50),
-    scaleRatio: ratios.length ? ratios.reduce((x, y) => x + y, 0) / ratios.length : NaN,
-    offset,
-    extentM: Math.max(...ea),
+  const ea = [0, 1, 2].map((k) => percentile(axis(a, k), 95) - percentile(axis(a, k), 5));
+  const extentM = Math.max(...ea);
+  const fit = fitSimilarity(a, b, extentM);
+  return { medianGapM: percentile(gaps, 50), ...fit, extentM };
+}
+
+function fitSimilarity(a: Float32Array, b: Float32Array, extentM: number): Pick<Alignment, "scaleRatio" | "offset" | "fitGapM"> {
+  const lo = [0, 1, 2].map((k) => percentile(axis(b, k), 1)) as Vec3;
+  const hi = [0, 1, 2].map((k) => percentile(axis(b, k), 99)) as Vec3;
+  const span = Math.max(...hi.map((v, k) => v - lo[k]), 1e-3);
+  const volume = hi.reduce((acc, v, k) => acc * Math.max(v - lo[k], 1e-3), 1);
+  const h = Math.max(span / 160, Math.cbrt(volume / 1e6));
+  const field = new DistanceField(lo, h, hi, b);
+  const c = [0, 1, 2].map((k) => percentile(axis(a, k), 50));
+  const scorer = (pts: Float32Array) => {
+    const n = pts.length / 3;
+    const g = new Float32Array(n);
+    return (s: number, t: number[]) => {
+      for (let i = 0; i < n; i++)
+        g[i] = field.at((pts[i * 3] - c[0]) * s + c[0] + t[0], (pts[i * 3 + 1] - c[1]) * s + c[1] + t[1], (pts[i * 3 + 2] - c[2]) * s + c[2] + t[2]) / s;
+      return percentile(g, 50);
+    };
   };
+  const quick = scorer(sample(a, 200)), score = scorer(a);
+  const ext = Math.max(extentM, 1e-3);
+  type Fit = { gap: number; s: number; t: number[] };
+  // Coordinate search over the offset at one scale, one step size at a time.
+  const refine = (f: Fit, steps: number[], sc: typeof score): Fit => {
+    let { gap, t } = f;
+    for (const step of steps)
+      for (let round = 0; round < 2; round++)
+        for (let k = 0; k < 3; k++)
+          for (let d = -6; d <= 6; d++) {
+            if (d === 0) continue;
+            const tt = [...t];
+            tt[k] += d * step;
+            const gg = sc(f.s, tt);
+            if (gg < gap) [gap, t] = [gg, tt];
+          }
+    return { gap, s: f.s, t };
+  };
+  // Coarse: every scale from 0.25x to 4x. Fine: the five best.
+  const coarse = Array.from({ length: 17 }, (_, si) => 0.25 * 16 ** (si / 16))
+    .map((s) => refine({ gap: quick(s, [0, 0, 0]), s, t: [0, 0, 0] }, [ext * s / 8, ext * s / 32], quick))
+    .sort((x, y) => x.gap - y.gap);
+  let best = coarse
+    .slice(0, 5)
+    .map((f) => refine({ ...f, gap: score(f.s, f.t) }, [ext * f.s / 32, ext * f.s / 128], score))
+    .reduce((x, y) => (y.gap < x.gap ? y : x));
+  for (let fi = -10; fi <= 10; fi++) {
+    const s = best.s * Math.exp(fi / 100);
+    const gap = score(s, best.t);
+    if (gap < best.gap) best = { ...best, gap, s };
+  }
+  // Distances near the surfaces are exact, so only a near-tie with the identity snaps to it.
+  const identity = score(1, [0, 0, 0]);
+  if (identity <= best.gap * 1.05) best = { gap: identity, s: 1, t: [0, 0, 0] };
+  return { scaleRatio: best.s, offset: best.t as Vec3, fitGapM: best.gap };
 }
 
 export function runChecks(b: MemoryBundle, splat?: GaussianView): Check[] {
@@ -191,8 +352,11 @@ export function runChecks(b: MemoryBundle, splat?: GaussianView): Check[] {
     const al = compareClouds(b.points, splat.positions);
     const tol = Math.max(0.3, 0.03 * al.extentM);
     const hint: string[] = [];
-    if (Math.abs(al.scaleRatio - 1) > 0.1) hint.push(`splat is about ${fmt(al.scaleRatio)}× the size of the poses`);
-    if (Math.hypot(...al.offset) > tol) hint.push(`shifted by (${al.offset.map((v) => fmt(v, 1)).join(", ")}) m`);
+    if (al.fitGapM > tol) hint.push(`no scale or shift lines the splat up with the pose points (best median gap ${fmt(al.fitGapM)} m)`);
+    else {
+      if (Math.abs(al.scaleRatio - 1) > 0.1) hint.push(`splat is about ${fmt(al.scaleRatio)}× the size of the poses`);
+      if (Math.hypot(...al.offset) > tol) hint.push(`shifted by (${al.offset.map((v) => fmt(v, 1)).join(", ")}) m`);
+    }
     if (al.medianGapM > tol || hint.length)
       add({ id: "splat.align", area: "splat", level: "fail", title: "Splat doesn't line up with the camera poses", detail: `Median gap ${fmt(al.medianGapM)} m (tolerance ${fmt(tol)} m). ${hint.join("; ")}. Audio positions use the poses' frame, so sounds will be misplaced in the splat.` });
     else add({ id: "splat.align", area: "splat", level: "ok", title: `Splat lines up with the poses (median gap ${fmt(al.medianGapM)} m, scale ${fmt(al.scaleRatio)}×)` });
