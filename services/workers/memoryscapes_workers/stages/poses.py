@@ -1,175 +1,215 @@
-"""Camera poses and a sparse point cloud with COLMAP (pycolmap, CPU).
+"""Camera poses.
 
-Inputs:  ingest/frames.json, ingest/frames/*.jpg
-Outputs (docs/SPLAT_OUTPUTS.md):
-    poses/cameras.json       registered keyframes, OpenCV convention, metric-ish world frame
-    poses/points3d.npy       (N, 3) float32
-    poses/points3d_rgb.npy   (N, 3) uint8
-    poses/meta.json          registration stats, how the frame was normalized, warnings
+- Quality path: GLOMAP / COLMAP (both through pycolmap).
+- Fast path: feed-forward VGGT or MASt3R-SfM (poses + dense points in minutes). Not yet.
+- Estimate metric scale (monocular metric depth, or IMU/ARKit later) so audio
+  distance attenuation works in meters. For now: eye height above a RANSAC ground plane.
 
-COLMAP's world frame is arbitrary in rotation and scale, so it's normalized to the
-pipeline's convention:
-- rotation: the cameras' mean "down" axis becomes -Y (phones are held roughly upright),
-  and the first camera's forward direction becomes +Z;
-- origin: first camera at x = z = 0, the ground at y = 0;
-- scale: the median camera height above the ground becomes `camera_height_m` (people
-  film at about chest height). Monocular SfM has no true scale; this is an estimate,
-  reported in meta.json, and the debugger's walking-speed check is the sanity test.
+Reads  {memory_id}/ingest/frames/, meta.json
+Writes {memory_id}/poses/
+    sparse/0/{cameras,images,points3D}.bin   undistorted PINHOLE model, in the world frame
+    images/frame_*.jpg                        undistorted images matching sparse/0
+    sparse_points.ply                         SfM points (xyz + rgb), world frame
+    points3d.npy                              the same points, (N, 3) float32
+    cameras.json                              [{frame_id, t, width, height, K, c2w,
+                                               image_key}]: OpenCV c2w, t on the audio clock
+    path.json                                 capture path for the viewer (three.js camera)
+    navigation.json                           spawn, floor, walkable bounds + corridor
+    alignment.json                            SfM -> world similarity and how it was found
+
+World frame: meters, +y up, ground at y=0, origin under the first camera, which looks
+along -z. Splat, audio sources and geolocation all live in this frame.
+
+cameras.json and points3d.npy are the audio stages' inputs (contract in
+services/workers/README.md).
 """
 
 from __future__ import annotations
 
-import logging
-import tempfile
-from dataclasses import dataclass
+import shutil
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
+from pydantic import BaseModel, Field
 
 from memoryscapes_workers.context import StageContext
-from memoryscapes_workers.storage import read_json, write_json, write_npy
+from memoryscapes_workers.stagekit import StageError, StageIO, run_stage, write_json
 
-log = logging.getLogger(__name__)
+STAGE = "poses"
+VERSION = "2"  # 2: cameras.json in the audio-stage contract format, points3d.npy
 
-
-class PosesError(RuntimeError):
-    pass
-
-
-@dataclass(frozen=True)
-class PosesConfig:
-    camera_height_m: float = 1.5
-    min_registered: int = 5
-    exhaustive_below: int = 50  # match all pairs for short clips, sequential windows above
+CAPTURE_HINT = (
+    "Move slowly and steadily, walk through the space or orbit the subject instead of "
+    "turning in place, and avoid blank walls, mirrors and very dark scenes."
+)
 
 
-def rotation_between(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Smallest rotation taking unit vector a to unit vector b."""
-    a, b = a / np.linalg.norm(a), b / np.linalg.norm(b)
-    v, c = np.cross(a, b), float(a @ b)
-    if c < -0.999999:  # opposite: rotate 180 degrees about any perpendicular axis
-        axis = np.cross(a, [1.0, 0, 0]) if abs(a[0]) < 0.9 else np.cross(a, [0, 1.0, 0])
-        axis /= np.linalg.norm(axis)
-        return 2 * np.outer(axis, axis) - np.eye(3)
-    vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
-    return np.eye(3) + vx + vx @ vx / (1 + c)
+class PosesConfig(BaseModel):
+    mapper: Literal["global", "incremental"] = "global"
+    camera_model: Literal["SIMPLE_RADIAL", "OPENCV", "PINHOLE", "SIMPLE_PINHOLE"] = "SIMPLE_RADIAL"
+    max_num_features: int = 8192
+    matcher: Literal["sequential", "exhaustive"] = "sequential"
+    sequential_overlap: int = 15
+    min_registered_fraction: float = Field(0.5, ge=0, le=1)
+    # Metric scale: handheld eye height above the ground plane. Override when known.
+    eye_height_m: float = 1.5
+    fixed_scale: float | None = None
+    corridor_radius_m: float = 1.5
+    use_gpu: bool = True  # SIFT on CUDA when the pycolmap build supports it
 
 
-def normalize_frame(c2ws: np.ndarray, points: np.ndarray, camera_height_m: float) -> tuple[np.ndarray, np.ndarray, dict]:
-    """c2ws (K, 4, 4) and points (N, 3) in COLMAP's frame -> the pipeline's frame."""
-    down = c2ws[:, :3, 1].mean(axis=0)
-    R = rotation_between(down, np.array([0.0, -1.0, 0.0]))
-    fwd = R @ c2ws[0, :3, 2]
-    yaw = np.arctan2(fwd[0], fwd[2])  # rotate about +Y so the first camera looks along +Z
-    cy, sy = np.cos(-yaw), np.sin(-yaw)
-    R = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]]) @ R
-
-    pos = (R @ c2ws[:, :3, 3].T).T
-    pts = (R @ points.T).T if len(points) else points.reshape(0, 3)
-    # how much the cameras' down axes disagree: large values mean "upright" is a guess
-    downs = c2ws[:, :3, 1] / np.linalg.norm(c2ws[:, :3, 1], axis=1, keepdims=True)
-    unit_down = down / np.linalg.norm(down)
-    info: dict = {"camera_tilt_spread_deg": float(np.degrees(np.median(np.arccos(np.clip(downs @ unit_down, -1, 1)))))}
-
-    scale, method = 1.0, "none (no points below the cameras)"
-    if len(pts) >= 20:
-        below = pts[pts[:, 1] < np.median(pos[:, 1])]
-        if len(below) >= 10:
-            ground = float(np.percentile(below[:, 1], 5))
-            height = float(np.median(pos[:, 1]) - ground)
-            if height > 1e-6:
-                scale, method = camera_height_m / height, f"median camera height above the ground = {camera_height_m} m"
-                info["ground_y_raw"] = ground
-    if method.startswith("none"):
-        log.warning("couldn't find the ground; leaving COLMAP's scale")
-    origin = np.array([pos[0, 0], info.get("ground_y_raw", float(np.min(pos[:, 1]) - 1.5 / scale)), pos[0, 2]])
-
-    out = np.repeat(np.eye(4)[None], len(c2ws), axis=0)
-    out[:, :3, :3] = np.einsum("ij,kjl->kil", R, c2ws[:, :3, :3])
-    out[:, :3, 3] = (pos - origin) * scale
-    pts = (pts - origin) * scale
-    info.update({"scale": scale, "scale_method": method})
-    return out, pts.astype(np.float32), info
+def run(ctx: StageContext) -> dict:
+    cfg = PosesConfig(**ctx.stage_config(STAGE))
+    return run_stage(ctx, STAGE, version=VERSION, config=cfg, upstream=["ingest"],
+                     body=lambda io: _poses(io, cfg))
 
 
-def _cam_from_world(image) -> np.ndarray:
-    cfw = image.cam_from_world() if callable(image.cam_from_world) else image.cam_from_world
-    return np.asarray(cfw.matrix())
+def _largest(recs: dict) -> object | None:
+    if not recs:
+        return None
+    return max(recs.values(), key=lambda r: r.num_reg_images())
 
 
-def reconstruct(image_dir: Path, work: Path, n_images: int, cfg: PosesConfig):
+def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int):
     import pycolmap
 
+    work = io.work_dir / "colmap"
+    work.mkdir()
     db = work / "database.db"
-    reader = pycolmap.ImageReaderOptions()
-    reader.camera_model = "SIMPLE_RADIAL"
-    try:  # pycolmap >= 3.11: camera model lives in the reader options
-        pycolmap.extract_features(db, image_dir, camera_mode=pycolmap.CameraMode.SINGLE, reader_options=reader)
-    except TypeError:
-        pycolmap.extract_features(db, image_dir, camera_mode=pycolmap.CameraMode.SINGLE, camera_model="SIMPLE_RADIAL")
-    if n_images <= cfg.exhaustive_below:
-        pycolmap.match_exhaustive(db)
+    device = pycolmap.Device.auto if cfg.use_gpu else pycolmap.Device.cpu
+
+    extraction = pycolmap.FeatureExtractionOptions()
+    extraction.sift.max_num_features = cfg.max_num_features
+    pycolmap.extract_features(
+        db, image_dir,
+        camera_mode=pycolmap.CameraMode.SINGLE,
+        reader_options=pycolmap.ImageReaderOptions(camera_model=cfg.camera_model),
+        extraction_options=extraction,
+        device=device,
+    )
+    io.progress(0.2, "features extracted")
+
+    if cfg.matcher == "exhaustive":
+        pycolmap.match_exhaustive(db, device=device)
     else:
-        pycolmap.match_sequential(db)
-    maps = pycolmap.incremental_mapping(db, image_dir, work / "sparse")
-    if not maps:
-        raise PosesError("COLMAP couldn't reconstruct the scene: too little texture or overlap between frames")
-    return max(maps.values(), key=lambda r: r.num_reg_images())
+        pairing = pycolmap.SequentialPairingOptions()
+        pairing.overlap = cfg.sequential_overlap
+        pairing.quadratic_overlap = True
+        pycolmap.match_sequential(db, pairing_options=pairing, device=device)
+    io.progress(0.4, "features matched")
+
+    sparse = work / "sparse"
+    sparse.mkdir()
+    if cfg.mapper == "global":
+        recs = pycolmap.global_mapping(db, image_dir, sparse)
+    else:
+        recs = pycolmap.incremental_mapping(db, image_dir, sparse)
+    rec = _largest(recs)
+    registered = rec.num_reg_images() if rec is not None else 0
+    if registered < max(10, cfg.min_registered_fraction * n_images):
+        raise StageError(
+            STAGE,
+            f"Could not recover the camera path: only {registered} of {n_images} frames "
+            f"were placed ({len(recs)} disconnected pieces).",
+            CAPTURE_HINT,
+        )
+    io.progress(0.7, f"registered {registered}/{n_images} frames")
+    return rec, work
 
 
-def run(ctx: StageContext, cfg: PosesConfig = PosesConfig()) -> dict:
-    storage = ctx.storage
-    frames = read_json(storage, ctx.key("ingest", "frames.json"))
-    by_name = {f"{f['frame_id']}.jpg": f for f in frames}
+def _poses(io: StageIO, cfg: PosesConfig) -> dict:
+    import pycolmap
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        work = Path(tmpdir)
-        images = work / "images"
-        images.mkdir()
-        for name, f in by_name.items():
-            (images / name).write_bytes(storage.read_bytes(f["key"]))
-        log.info("SfM on %d frames", len(frames))
-        rec = reconstruct(images, work, len(frames), cfg)
+    from memoryscapes_workers.visual import alignment as al
 
-        regs = sorted(rec.images.values(), key=lambda im: by_name[im.name]["t"])
-        if len(regs) < cfg.min_registered:
-            raise PosesError(f"only {len(regs)} of {len(frames)} frames registered; try a slower, steadier video")
-        c2ws, intrinsics = [], []
-        for im in regs:
-            M = _cam_from_world(im)
-            R, t = M[:, :3], M[:, 3]
-            c2w = np.eye(4)
-            c2w[:3, :3], c2w[:3, 3] = R.T, -R.T @ t
-            c2ws.append(c2w)
-            cam = rec.cameras[im.camera_id]
-            intrinsics.append((np.asarray(cam.calibration_matrix()), int(cam.width), int(cam.height)))
-        pts = np.array([p.xyz for p in rec.points3D.values()], dtype=float).reshape(-1, 3)
-        rgb = np.array([p.color for p in rec.points3D.values()], dtype=np.uint8).reshape(-1, 3)
-        reproj = float(np.mean([p.error for p in rec.points3D.values()])) if len(pts) else None
+    ingest_dir = io.input_dir("ingest")
+    meta = io.read_upstream_json("ingest", "meta.json")
+    frame_times = {Path(f["file"]).name: f["t"] for f in meta["keyframes"]["frames"]}
+    image_dir = ingest_dir / "frames"
+    n_images = len(frame_times)
 
-    c2ws_n, pts_n, frame_info = normalize_frame(np.stack(c2ws), pts, cfg.camera_height_m)
-    cameras = [
-        {"frame_id": by_name[im.name]["frame_id"], "t": by_name[im.name]["t"], "width": w, "height": h, "K": K.tolist(), "c2w": c2w.tolist(), "image_key": by_name[im.name]["key"]}
-        for im, c2w, (K, w, h) in zip(regs, c2ws_n, intrinsics)
-    ]
-    write_json(storage, ctx.key("poses", "cameras.json"), cameras)
-    write_npy(storage, ctx.key("poses", "points3d.npy"), pts_n)
-    write_npy(storage, ctx.key("poses", "points3d_rgb.npy"), rgb)
+    rec, work = _sfm(io, cfg, image_dir, n_images)
+
+    # ---- gravity, metric scale, origin
+    images = sorted((im for im in rec.images.values() if im.has_pose), key=lambda im: im.name)
+    centers = np.array([im.projection_center() for im in images])
+    rots = np.array([im.cam_from_world().rotation.matrix().T for im in images])
+    pts = np.array([p.xyz for p in rec.points3D.values()])
+    align = al.estimate_alignment(centers, rots, pts, eye_height_m=cfg.eye_height_m,
+                                  fixed_scale=cfg.fixed_scale)
+
+    # ---- undistort, then move the undistorted model into the world frame
+    raw_model = work / "model_raw"
+    raw_model.mkdir()
+    rec.write(raw_model)
+    undist = work / "undistorted"
+    pycolmap.undistort_images(undist, raw_model, image_dir)
+    model = pycolmap.Reconstruction(undist / "sparse")
+    model.transform(pycolmap.Sim3d(align.matrix()))
+    io.progress(0.85, "undistorted and aligned")
+
+    out = io.out_dir
+    (out / "sparse" / "0").mkdir(parents=True)
+    model.write(out / "sparse" / "0")
+    shutil.copytree(undist / "images", out / "images")
+    model.export_PLY(str(out / "sparse_points.ply"))
+
+    # ---- per-frame exports (capture order)
+    frames, c2ws = [], []
+    for im in sorted((im for im in model.images.values() if im.has_pose), key=lambda im: im.name):
+        cam = model.cameras[im.camera_id]
+        c2w = np.eye(4)
+        c2w[:3, :] = im.cam_from_world().inverse().matrix()
+        c2ws.append(c2w)
+        k = cam.calibration_matrix()  # undistorted cameras are PINHOLE
+        frames.append({
+            "frame_id": Path(im.name).stem,
+            "t": float(frame_times[im.name]),
+            "width": int(cam.width), "height": int(cam.height),
+            "K": np.round(k, 6).tolist(),
+            "c2w": np.round(c2w, 6).tolist(),
+            # The undistorted image, which is what K describes.
+            "image_key": io.ctx.key(STAGE, f"images/{im.name}"),
+        })
+    write_json(out / "cameras.json", frames)
+    path = []
+    for f, c2w in zip(frames, c2ws, strict=True):
+        pos, quat = al.camera_to_threejs(c2w)
+        path.append({"t": f["t"], "position": np.round(pos, 4).tolist(),
+                     "quaternion_xyzw": np.round(quat, 6).tolist()})
+    write_json(out / "path.json", {
+        "convention": "three.js camera (looks along -z, +y up); world meters",
+        "fov_y_deg": float(np.degrees(2 * np.arctan(frames[0]["height"] / (2 * frames[0]["K"][1][1])))),
+        "samples": path,
+    })
+    nav = al.navigation_from_trajectory(c2ws, corridor_radius_m=cfg.corridor_radius_m)
+    nav["original_path"] = "path.json"
+    write_json(out / "navigation.json", nav)
+
+    world_pts = np.array([p.xyz for p in model.points3D.values()])
+    np.save(out / "points3d.npy", world_pts.astype(np.float32))
+    stats = {
+        "registered": len(frames),
+        "frames": n_images,
+        "points3d": int(model.num_points3D()),
+        "mean_reprojection_error_px": round(float(model.compute_mean_reprojection_error()), 3),
+        "mean_track_length": round(float(model.compute_mean_track_length()), 2),
+        "path_length_m": round(float(np.linalg.norm(np.diff([c[:3, 3] for c in c2ws], axis=0), axis=1).sum()), 2),
+        "scene_extent_m": np.round(np.percentile(world_pts, 98, axis=0) - np.percentile(world_pts, 2, axis=0), 2).tolist(),
+    }
+    write_json(out / "alignment.json", {**align.to_dict(), "stats": stats, "mapper": cfg.mapper})
 
     warnings = []
-    if len(regs) < 0.7 * len(frames):
-        warnings.append(f"only {len(regs)} of {len(frames)} frames registered; localization uses those")
-    meta = {
-        "method": "COLMAP incremental SfM (pycolmap, CPU)",
-        "registered": len(regs),
-        "frames": len(frames),
-        "points": int(len(pts_n)),
-        "mean_reprojection_error_px": reproj,
-        **frame_info,
-        "units": "meters (estimated)",
-        "up": "+y",
+    if align.scale_confidence < 0.4:
+        warnings.append(
+            f"Metric scale is a rough guess ({align.scale_method}); distances may be off."
+        )
+    io.progress(1.0, "done")
+    return {
+        **stats,
+        "up_method": align.up_method,
+        "scale_method": align.scale_method,
+        "scale_confidence": align.scale_confidence,
         "warnings": warnings,
     }
-    write_json(storage, ctx.key("poses", "meta.json"), meta)
-    log.info("poses: %d/%d registered, %d points, scale x%.3f", len(regs), len(frames), len(pts_n), frame_info["scale"])
-    return meta

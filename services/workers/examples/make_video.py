@@ -24,7 +24,7 @@ import soundfile as sf  # noqa: E402
 from scenes import SCENARIOS, camera_path, render  # noqa: E402
 from splat_fake import png_bytes, point_colors, render_view  # noqa: E402
 
-from memoryscapes_workers.media import find_tool  # noqa: E402
+import shutil  # noqa: E402
 
 
 def main() -> int:
@@ -49,7 +49,7 @@ def main() -> int:
             (t / f"{i:05d}.png").write_bytes(png_bytes(render_view(cam, pts, cols, width=640, height=480, radius_m=0.12)))
         sf.write(t / "audio.wav", r.recording.T, r.sample_rate, subtype="PCM_16")
         subprocess.run(
-            [find_tool("ffmpeg"), "-y", "-v", "error", "-framerate", str(args.fps), "-i", str(t / "%05d.png"), "-i", str(t / "audio.wav"),
+            [shutil.which("ffmpeg") or "ffmpeg", "-y", "-v", "error", "-framerate", str(args.fps), "-i", str(t / "%05d.png"), "-i", str(t / "audio.wav"),
              "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-shortest", args.out],
             check=True,
         )

@@ -6,7 +6,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { jobHandler } from "./jobs";
+import { childPath, jobHandler } from "./jobs";
 
 let root: string;
 beforeAll(() => {
@@ -60,6 +60,17 @@ describe("upload + job API", () => {
     fs.writeFileSync(path.join(dir, "log.txt"), "line 1\nline 2\n");
     const r = await call("GET", "/api/memories/done_one/job");
     expect(r.json).toMatchObject({ running: false, status: { state: "done" }, log: ["line 1", "line 2"] });
+  });
+
+  it("finds a winget ffmpeg install that isn't on this process's PATH yet", () => {
+    const local = path.join(root, "AppData", "Local");
+    const bin = path.join(local, "Microsoft", "WinGet", "Packages", "Gyan.FFmpeg_x", "ffmpeg-9-full_build", "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, "ffmpeg.exe"), "");
+    const p = childPath({ LOCALAPPDATA: local, PATH: "/usr/bin", FFMPEG_DIR: "/opt/ffmpeg" }).split(path.delimiter);
+    expect(p[0]).toBe("/opt/ffmpeg");
+    expect(p).toContain(bin);
+    expect(p[p.length - 1]).toBe("/usr/bin");
   });
 
   it("passes other routes through", async () => {

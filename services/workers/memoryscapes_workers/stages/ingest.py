@@ -1,140 +1,212 @@
 """Ingest: demux audio and frames, read metadata, pick keyframes.
 
-Inputs (written by the upload):
-    upload/meta.json      {"video": "<file name>", "audio": "<file name>" | null}
-    upload/<files>        the uploaded video, and optionally a separate audio recording
+- ffmpeg demux; keep the original audio channel layout and sample rate.
+- Choose 150-400 keyframes by sharpness (Laplacian variance) and parallax.
+- Panoramas: split equirectangular frames into cubemap/perspective crops (not yet).
+- Read GPS and capture time from EXIF or container metadata for the globe pin.
 
-Outputs:
-    ingest/audio.wav      original channels and sample rate (from the separate audio file if given)
-    ingest/frames/<id>.jpg  keyframes, longest side <= max_side
-    ingest/frames.json    [{"frame_id", "t", "key", "sharpness"}], t on the audio clock
-    ingest/meta.json      {"mic": {...}, "source": {...}, "location"?, "captured_at"?}
+Reads  {memory_id}/upload/        the uploaded video (+ optional separate audio file)
+Writes {memory_id}/ingest/
+    frames/frame_00000.jpg ...    upright keyframes, long side <= output_max_side
+    audio.wav                     primary audio (separate recording if uploaded,
+                                  otherwise the video's track), original rate/channels
+    video_audio.wav               the video's own track, when a separate file was given
+    meta.json                     media info, geo, capture time, keyframe timeline, and
+                                  the "mic" block the audio stages read
 
-Frames are sampled evenly at a rate that gives about `target_frames`, then the blurriest
-`drop_blurry` fraction is dropped (motion blur hurts SfM and detection alike).
+The audio stages' input contract is in services/workers/README.md.
 """
 
 from __future__ import annotations
 
-import logging
-import tempfile
-from dataclasses import dataclass
+import math
 from pathlib import Path
 
-import numpy as np
+from pydantic import BaseModel, Field
 
 from memoryscapes_workers.context import StageContext
-from memoryscapes_workers.media import MediaError, find_tool, location_from_tags, probe, run as ff
-from memoryscapes_workers.storage import read_json, write_json
+from memoryscapes_workers.stagekit import UPLOAD_PREFIX, StageError, StageIO, run_stage, write_json
 
-log = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class IngestConfig:
-    max_duration_s: float = 60.0
-    target_frames: int = 60
-    min_fps: float = 0.5
-    max_fps: float = 4.0
-    max_side: int = 960
-    drop_blurry: float = 0.15
+STAGE = "ingest"
+VERSION = "2"  # 2: audio-stage contract outputs (audio.wav, meta.json, cameras.json)
 
 
-def _sharpness(path: Path) -> float:
-    """Variance of a Laplacian on a downscaled grey image."""
-    from PIL import Image
-
-    img = Image.open(path).convert("L")
-    img.thumbnail((320, 320))
-    a = np.asarray(img, dtype=np.float32)
-    lap = -4 * a[1:-1, 1:-1] + a[:-2, 1:-1] + a[2:, 1:-1] + a[1:-1, :-2] + a[1:-1, 2:]
-    return float(lap.var())
-
-
-def _local(ctx: StageContext, key: str, tmp: Path) -> Path:
-    """A local path for a stored object (storage may be S3)."""
-    root = getattr(ctx.storage, "root", None)
-    if root is not None and (Path(root) / key).exists():
-        return Path(root) / key
-    path = tmp / Path(key).name
-    path.write_bytes(ctx.storage.read_bytes(key))
-    return path
+class IngestConfig(BaseModel):
+    max_keyframes: int = 400
+    min_keyframes: int = 150  # short clips can yield fewer (one per candidate at most)
+    # Desired camera motion between keyframes: median optical flow / image diagonal.
+    target_step: float = Field(0.035, gt=0)
+    # Candidates decoded per keyframe slot, before selection.
+    oversample: float = 3.0
+    analysis_max_side: int = 640
+    output_max_side: int = 1600
+    # Reject a keyframe whose sharpness is below this x the local (~1 s) median.
+    blur_reject: float = 0.7
+    # Total motion (in image diagonals) below which we fail: the camera barely moved.
+    min_total_motion: float = 0.25
+    jpeg_quality: int = 95
+    max_duration_s: float = 600.0
 
 
-def run(ctx: StageContext, cfg: IngestConfig = IngestConfig()) -> dict:
-    storage = ctx.storage
-    upload = read_json(storage, ctx.key("upload", "meta.json"))
-    if not upload.get("video"):
-        raise MediaError("upload/meta.json names no video")
+def run(ctx: StageContext) -> dict:
+    cfg = IngestConfig(**ctx.stage_config(STAGE))
+    return run_stage(ctx, STAGE, version=VERSION, config=cfg, upstream=[UPLOAD_PREFIX],
+                     body=lambda io: _ingest(io, cfg))
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        video = _local(ctx, ctx.key("upload", upload["video"]), tmp)
-        info = probe(video)
-        streams = info.get("streams", [])
-        vstream = next((s for s in streams if s.get("codec_type") == "video"), None)
-        if vstream is None:
-            raise MediaError(f"{upload['video']} has no video stream")
-        duration = float(info.get("format", {}).get("duration") or vstream.get("duration") or 0)
-        use_s = min(duration, cfg.max_duration_s) if duration else cfg.max_duration_s
-        tags = {**info.get("format", {}).get("tags", {}), **vstream.get("tags", {})}
 
-        # ---------- audio
-        audio_src = _local(ctx, ctx.key("upload", upload["audio"]), tmp) if upload.get("audio") else video
-        ainfo = probe(audio_src) if audio_src != video else info
-        astream = next((s for s in ainfo.get("streams", []) if s.get("codec_type") == "audio"), None)
-        if astream is None:
-            raise MediaError("no audio track: upload a video with sound, or a separate audio file")
-        channels = int(astream.get("channels", 1))
-        wav = tmp / "audio.wav"
-        ff([find_tool("ffmpeg"), "-y", "-v", "error", "-i", str(audio_src), "-t", f"{use_s:.3f}", "-vn", "-c:a", "pcm_s16le", str(wav)])
-        storage.write_bytes(ctx.key("ingest", "audio.wav"), wav.read_bytes(), "audio/wav")
-        log.info("audio: %d ch, %s Hz, %.1f s", channels, astream.get("sample_rate"), use_s)
+def mic_info(audio_meta: dict | None) -> dict:
+    """The ``mic`` block for the audio stages. Only "stereo" enables DOA localization; the
+    mic spacing is unknown from a phone video, so localize falls back to its default."""
+    channels = int(audio_meta.get("channels") or 0) if audio_meta else 0
+    layout = (audio_meta or {}).get("channel_layout") or ""
+    if channels <= 1:
+        kind = "mono"
+    elif channels == 2:
+        kind = "stereo"
+    elif channels == 4 and "ambisonic" in layout.lower():
+        kind = "foa"
+    else:
+        kind = "multichannel"
+    return {"channels": channels, "layout": kind, "spacing_m": None}
 
-        # ---------- frames
-        fps = float(np.clip(cfg.target_frames / max(use_s, 0.1), cfg.min_fps, cfg.max_fps))
-        frames_dir = tmp / "frames"
-        frames_dir.mkdir()
-        scale = f"scale='if(gt(iw,ih),min({cfg.max_side},iw),-2)':'if(gt(iw,ih),-2,min({cfg.max_side},ih))'"
-        ff([find_tool("ffmpeg"), "-y", "-v", "error", "-i", str(video), "-t", f"{use_s:.3f}", "-vf", f"fps={fps:.4f},{scale}", "-q:v", "3", str(frames_dir / "%05d.jpg")])
-        paths = sorted(frames_dir.glob("*.jpg"))
-        if len(paths) < 3:
-            raise MediaError(f"only {len(paths)} frames extracted; the video may be too short")
-        frames = [{"frame_id": f"f{i:04d}", "t": round(i / fps, 4), "path": p, "sharpness": _sharpness(p)} for i, p in enumerate(paths)]
-        if cfg.drop_blurry and len(frames) > 12:
-            cutoff = np.quantile([f["sharpness"] for f in frames], cfg.drop_blurry)
-            kept = [f for f in frames if f["sharpness"] >= cutoff]
-            log.info("frames: kept %d of %d after dropping the blurriest", len(kept), len(frames))
-            frames = kept
-        index = []
-        for f in frames:
-            key = ctx.key("ingest", f"frames/{f['frame_id']}.jpg")
-            storage.write_bytes(key, f["path"].read_bytes(), "image/jpeg")
-            index.append({"frame_id": f["frame_id"], "t": f["t"], "key": key, "sharpness": round(f["sharpness"], 2)})
-        write_json(storage, ctx.key("ingest", "frames.json"), index)
 
-    layout = {1: "mono", 2: "stereo"}.get(channels, "multichannel")
+def _pick_inputs(upload: Path) -> tuple[Path, Path | None]:
+    from memoryscapes_workers.visual.video import AUDIO_EXTS, VIDEO_EXTS
+
+    files = sorted(p for p in upload.rglob("*") if p.is_file())
+    videos = [p for p in files if p.suffix.lower() in VIDEO_EXTS]
+    audios = [p for p in files if p.suffix.lower() in AUDIO_EXTS]
+    if not videos:
+        names = ", ".join(p.name for p in files) or "nothing"
+        raise StageError(STAGE, f"No video found in upload (got {names}).",
+                         "Supported: " + ", ".join(sorted(VIDEO_EXTS)))
+    if len(videos) > 1:
+        # Largest file wins; multi-clip memories are not supported yet.
+        videos.sort(key=lambda p: p.stat().st_size, reverse=True)
+    return videos[0], (audios[0] if audios else None)
+
+
+def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
+    import cv2
+
+    from memoryscapes_workers.visual import keyframes, video
+
+    if io.ctx.input_kind != "video":
+        raise StageError(STAGE, f"input_kind={io.ctx.input_kind!r} is not supported yet.",
+                         "Panorama input is planned for phase 5; upload a video.")
+    video.require_ffmpeg()
+    src, separate_audio = _pick_inputs(io.input_dir(UPLOAD_PREFIX))
+    info = video.probe(src)
+    if not info.width or not info.fps:
+        raise StageError(STAGE, f"{src.name} has no decodable video stream.")
+    if info.duration_s <= 0.5:
+        raise StageError(STAGE, "Video is too short.", "Record at least ~10 seconds.")
+    if info.duration_s > cfg.max_duration_s:
+        raise StageError(STAGE, f"Video is {info.duration_s:.0f}s; the limit is "
+                         f"{cfg.max_duration_s:.0f}s.", "Trim the clip and upload again.")
+    warnings: list[str] = []
+
+    # ---- audio
+    out = io.out_dir
+    audio_meta = None
+    if separate_audio is not None:
+        a_info = video.probe(separate_audio)
+        path = video.demux_audio(separate_audio, out / "audio", a_info.audio and a_info.audio.channels)
+        audio_meta = {"file": path.name, "source": "separate_file", "original": separate_audio.name,
+                      **(vars(a_info.audio) if a_info.audio else {})}
+        warnings.append("Separate audio file is not time-aligned to the video yet.")
+        if info.audio:
+            video.demux_audio(src, out / "video_audio", info.audio.channels)
+    elif info.audio:
+        path = video.demux_audio(src, out / "audio", info.audio.channels)
+        audio_meta = {"file": path.name, "source": "video_track", **vars(info.audio)}
+    else:
+        warnings.append("No audio found; the memory will be silent.")
+    io.progress(0.1, "audio extracted")
+
+    # ---- candidate analysis (low-res grayscale pass)
+    disp_w, disp_h = info.display_size
+    sample_fps = min(info.fps, max(2.0, cfg.max_keyframes * cfg.oversample / info.duration_s))
+    a_size = video.fit_size(disp_w, disp_h, cfg.analysis_max_side)
+    stats = keyframes.analyze(video.iter_frames(src, a_size, sample_fps, gray=True))
+    n_candidates = len(stats.sharpness)
+    if n_candidates < 3:
+        raise StageError(STAGE, "Could not decode enough frames from the video.")
+    io.progress(0.5, f"analyzed {n_candidates} candidate frames")
+
+    sel = keyframes.select(
+        stats,
+        target_step=cfg.target_step,
+        min_keyframes=cfg.min_keyframes,
+        max_keyframes=cfg.max_keyframes,
+        blur_reject=cfg.blur_reject,
+        sharpness_window=max(3, int(round(sample_fps))),
+    )
+    warnings += sel.warnings
+    if sel.total_motion < cfg.min_total_motion:
+        raise StageError(
+            STAGE,
+            f"The camera barely moved (total motion {sel.total_motion:.2f} image diagonals).",
+            "Walk through the space or orbit the subject slowly; rotating in place is not enough.",
+        )
+    if len(sel.indices) < 20:
+        raise StageError(STAGE, f"Only {len(sel.indices)} usable keyframes.",
+                         "Record a longer, steadier clip with more camera movement.")
+
+    # ---- write selected frames at output resolution (second decode pass)
+    o_size = video.fit_size(disp_w, disp_h, cfg.output_max_side)
+    wanted = {idx: k for k, idx in enumerate(sel.indices)}
+    frames_dir = out / "frames"
+    frames_dir.mkdir()
+    frames_meta: list[dict] = []
+    params = [cv2.IMWRITE_JPEG_QUALITY, cfg.jpeg_quality]
+    last = max(wanted)
+    for i, rgb in enumerate(video.iter_frames(src, o_size, sample_fps)):
+        if i in wanted:
+            name = f"frame_{wanted[i]:05d}.jpg"
+            cv2.imwrite(str(frames_dir / name), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), params)
+            frames_meta.append({
+                "file": f"frames/{name}",
+                "t": round(i / sample_fps, 4),
+                "candidate": i,
+                "sharpness": round(float(sel.rel_sharpness[i]), 3),
+            })
+        if i >= last:
+            break
+    if len(frames_meta) != len(sel.indices):
+        raise StageError(STAGE, "Frame extraction pass returned fewer frames than analysis.")
+    io.progress(0.95, f"wrote {len(frames_meta)} keyframes")
+
     meta = {
-        "mic": {"channels": channels, "layout": layout},  # spacing unknown: localize uses its default
-        "source": {
-            "video": upload["video"],
-            "audio": upload.get("audio"),
-            "duration_s": duration,
-            "used_s": use_s,
-            "width": vstream.get("width"),
-            "height": vstream.get("height"),
-            "video_codec": vstream.get("codec_name"),
-            "audio_codec": astream.get("codec_name"),
-            "sample_rate": int(astream.get("sample_rate", 0)),
-            "frame_rate_sampled": round(fps, 3),
+        "source": {"file": src.name, "container": info.container,
+                   "duration_s": info.duration_s, "size_bytes": info.size_bytes},
+        "video": {k: v for k, v in info.to_dict().items()
+                  if k in ("codec", "width", "height", "display_width", "display_height",
+                           "rotation", "fps", "num_frames")},
+        "audio": audio_meta,
+        "geo": dict(zip(("lat", "lon", "alt"), info.geo, strict=True)) if info.geo else None,
+        "captured_at": info.captured_at,
+        "keyframes": {
+            "count": len(frames_meta),
+            "width": o_size[0],
+            "height": o_size[1],
+            "sample_fps": round(sample_fps, 4),
+            "candidates": n_candidates,
+            "total_motion": round(sel.total_motion, 4),
+            "frames": frames_meta,
         },
+        "warnings": warnings,
     }
-    loc = location_from_tags(tags)
-    if loc:
-        meta["location"] = loc
-    if tags.get("creation_time"):
-        meta["captured_at"] = tags["creation_time"]
-    if upload.get("audio"):
-        meta["source"]["note"] = "separate audio file: assumed to start with the video"
-    write_json(storage, ctx.key("ingest", "meta.json"), meta)
-    return meta
+    meta["mic"] = mic_info(audio_meta)
+    write_json(out / "meta.json", meta)
+    return {
+        "keyframes": len(frames_meta),
+        "candidates": n_candidates,
+        "has_audio": audio_meta is not None,
+        "geo": meta["geo"],
+        "captured_at": info.captured_at,
+        "warnings": warnings,
+        "duration_s": round(info.duration_s, 2),
+        "frame_size": list(o_size),
+        "_motion_per_keyframe": round(sel.total_motion / max(1, len(frames_meta)), 4),
+    }

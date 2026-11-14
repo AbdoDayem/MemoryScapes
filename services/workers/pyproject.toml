@@ -13,11 +13,16 @@ dependencies = [
   "pillow>=10",
 ]
 
+[project.scripts]
+memoryscapes-worker = "memoryscapes_workers.cli:main"
+
 [project.optional-dependencies]
-# Heavy ML dependencies are split out so the API and CI stay light. CPU-only torch:
+# Heavy GPU / ML dependencies are split out so the API and CI stay light. CPU-only torch:
 #   pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cpu
 # AudioSep is not on PyPI: see README "Models" (clone into <repo>/.models/AudioSep).
-visual = ["torch", "transformers>=4.44,<5", "pycolmap>=3.11"]
+# ingest/poses/splat also need the ffmpeg binary. gsplat's kernels need CUDA; on a Mac
+# the splat stage uses its pure-PyTorch rasterizer instead (trainer="torch").
+visual = ["gsplat>=1.5", "torch", "opencv-python", "pycolmap>=4.2", "transformers>=4.44,<5", "pillow"]
 audio = [
   "torch", "torchaudio", "torchvision", "demucs>=4.0", "transformers>=4.44,<5",
   # AudioSep's inference path imports these
@@ -25,6 +30,10 @@ audio = [
 ]
 satie = ["mcp>=1.9"]
 dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+# Explicit, so local folders like data/ (pipeline output) aren't picked up as packages.
+include = ["memoryscapes_workers*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -4,7 +4,7 @@ MemoryScapes turns a video (or panoramas) plus an audio recording into a walkabl
 
 ## Status
 
-Mostly a scaffold: API endpoints return `501`. In the workers, `ingest` (ffmpeg), `poses` (pycolmap, CPU) and the audio stages (`separate`, `localize`, `soundscape`) are implemented. `splat` and `publish` raise `NotImplementedError`. `python -m memoryscapes_workers.run` runs the pipeline on one uploaded video, and the debugger's upload page drives it. Follow the build phases in `docs/ARCHITECTURE.md` § 9. The MVP is video → COLMAP → gsplat → web viewer, with private memories only. Stage data contracts are in `services/workers/README.md`.
+Mostly a scaffold: API endpoints return `501`. In the workers, the visual stages (`ingest`, `poses`, `splat`) and the audio stages (`separate`, `localize`, `soundscape`) are implemented and tested; `publish` raises `NotImplementedError`. `python -m memoryscapes_workers.run` runs the whole pipeline on one uploaded video (each stage in its own process), and the debugger's upload page drives it. Follow the build phases in `docs/ARCHITECTURE.md` § 9. The MVP is video → COLMAP → gsplat → web viewer, with private memories only. Stage data contracts are in `services/workers/README.md`.
 
 ## Layout
 
@@ -28,9 +28,10 @@ cd services/api && pip install -e ".[dev]" && uvicorn app.main:app --reload
 cd services/workers && python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev]"   # core + tests
 cd services/workers && .venv/Scripts/python -m pytest                                            # worker tests
 cd services/workers && pip install -e ".[audio,visual,satie]"   # model backends + SATIE MCP client
-cd services/workers && .venv/Scripts/python examples/run_example.py   # example memories -> examples/out/
-cd tools/debugger && npm install && npm run dev                      # debugger on :5178 (MEMORYSCAPES_DATA=<root> for other data)
-cd tools/debugger && npm test                                        # debugger parser/check tests
+cd services/workers && memoryscapes-worker demo                  # synthetic video -> ingest -> poses -> splat (local)
+cd services/workers && .venv/Scripts/python examples/run_example.py   # audio example memories -> examples/out/
+cd tools/debugger && npm install && npm run dev                      # debugger on :5178, with video upload (MEMORYSCAPES_DATA=<root> for other data)
+cd tools/debugger && npm test                                        # debugger parser/check/API tests
 ```
 
 ## Rules for working in this repo

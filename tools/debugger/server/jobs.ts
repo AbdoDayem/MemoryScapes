@@ -63,12 +63,30 @@ function tail(file: string, lines = 80): string[] {
   return text.split(/\r?\n/).filter(Boolean).slice(-lines);
 }
 
-/** Extra places a fresh winget ffmpeg install lands, for child processes started before PATH changed. */
-function childPath(): string {
-  const parts = [process.env.PATH ?? ""];
-  const local = process.env.LOCALAPPDATA;
-  if (local) parts.unshift(path.join(local, "Microsoft", "WinGet", "Links"));
-  return parts.join(path.delimiter);
+/**
+ * PATH for the pipeline, plus where ffmpeg lands when installed after this server started
+ * (a winget install only updates PATH for new shells): FFMPEG_DIR, and the bin folders of
+ * winget's FFmpeg packages.
+ */
+export function childPath(env: NodeJS.ProcessEnv = process.env): string {
+  const extra: string[] = [];
+  if (env.FFMPEG_DIR) extra.push(env.FFMPEG_DIR);
+  const local = env.LOCALAPPDATA;
+  if (local) {
+    const packages = path.join(local, "Microsoft", "WinGet", "Packages");
+    try {
+      for (const pkg of fs.readdirSync(packages).filter((d) => /ffmpeg/i.test(d))) {
+        for (const build of fs.readdirSync(path.join(packages, pkg))) {
+          const bin = path.join(packages, pkg, build, "bin");
+          if (fs.existsSync(path.join(bin, "ffmpeg.exe")) || fs.existsSync(path.join(bin, "ffmpeg"))) extra.push(bin);
+        }
+      }
+    } catch {
+      /* no winget packages folder */
+    }
+    extra.push(path.join(local, "Microsoft", "WinGet", "Links"));
+  }
+  return [...extra, env.PATH ?? ""].join(path.delimiter);
 }
 
 export function jobHandler(cfg: JobConfig) {
