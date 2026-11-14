@@ -11,9 +11,9 @@ ingest ─┬─> poses ─┬──────────> splat ────
 
 | Stage | Module | Hardware | Status |
 |---|---|---|---|
-| Ingest | `stages/ingest.py` | CPU | stub |
-| Camera poses | `stages/poses.py` | GPU | stub |
-| Splat training | `stages/splat.py` | GPU | stub |
+| Ingest | `stages/ingest.py` | CPU | implemented |
+| Camera poses | `stages/poses.py` | CPU (GPU optional) | implemented (COLMAP via pycolmap) |
+| Splat training | `stages/splat.py` | GPU | implemented (gsplat on CUDA; PyTorch fallback on Mac) |
 | Separation + labeling | `stages/separate.py` | GPU | implemented |
 | Localization | `stages/localize.py` | GPU | implemented |
 | Soundscape (SATIE) | `stages/soundscape.py` + `providers/` | external | implemented |
@@ -29,6 +29,28 @@ pip install -e ".[dev]"                   # core + tests (numpy, scipy, soundfil
 pip install -e ".[audio,visual,satie]"    # model backends and the SATIE MCP client
 pytest
 ```
+
+The visual stages also need the `ffmpeg` binary. Tests that need ffmpeg, OpenCV, pycolmap or
+torch skip themselves when those aren't installed (as in CI).
+
+## Running stages locally
+
+`memoryscapes-worker` (or `python -m memoryscapes_workers`) runs stages against local storage:
+`STORAGE_ROOT`, default `data/storage`, or `STORAGE_BACKEND=s3` for MinIO/S3.
+
+```bash
+memoryscapes-worker demo                                   # synthetic video -> ingest -> poses -> splat
+memoryscapes-worker import mem_1 clip.mp4 [--audio rec.wav]
+memoryscapes-worker run mem_1 --until poses                # real inputs for the audio stages
+memoryscapes-worker run mem_1 --stages separate,localize,soundscape
+memoryscapes-worker run mem_1 --until splat --set splat.trainer=points   # seconds, no training
+memoryscapes-worker run mem_1 --until splat --set splat.trainer=torch    # Mac (MPS); slow
+```
+
+`--until poses` turns any phone video into the inputs listed below, so the audio stages can be
+tried on real footage. The visual stages skip themselves when their inputs and config haven't
+changed (`--force` re-runs them). `splat.trainer=auto` (the default) uses gsplat on an NVIDIA
+GPU, otherwise the PyTorch rasterizer on Apple Silicon, otherwise `points`.
 
 ## Example memories
 
@@ -55,14 +77,14 @@ AudioSep isn't on PyPI. Clone [Audio-AGI/AudioSep](https://github.com/Audio-AGI/
 
 All keys are relative to `{memory_id}/` in storage (`LocalStorage` in dev/tests, `S3Storage` deployed). Conventions: world frame in metres with +Y up; cameras in OpenCV convention (`c2w`); a stereo mic lies along the camera's +x axis (channel 0 = left).
 
-**Inputs the audio stages expect from ingest and poses** (those stages are still stubs):
+**Inputs the audio stages read, written by ingest and poses** (`tests/test_visual_to_audio.py` runs the audio stages on real ingest/poses output):
 
 | Key | Contents |
 |---|---|
 | `ingest/audio.wav` | Original recording, all channels, original sample rate |
-| `ingest/meta.json` | `{"mic": {"channels", "layout": "mono" \| "stereo" \| "foa", "spacing_m"?}}` |
+| `ingest/meta.json` | `{"mic": {"channels", "layout": "mono" \| "stereo" \| "foa" \| "multichannel", "spacing_m"?}}`, plus media info, geo, capture time and the keyframe timeline. Only `stereo` enables DOA. |
 | `ingest/frames/<id>.jpg` | Keyframe images |
-| `poses/cameras.json` | `[{"frame_id", "t", "width", "height", "K", "c2w", "image_key"}]`, with `t` on the audio clock |
+| `poses/cameras.json` | `[{"frame_id", "t", "width", "height", "K", "c2w", "image_key"}]`, with `t` on the audio clock. `image_key` is the undistorted image in `poses/images/`, which `K` describes. |
 | `poses/points3d.npy` | `(N, 3)` scene points, world metres |
 
 **separate**: tags the mix with CLAP over sliding windows, separates each detected class (AudioSep, with Demucs vocals for speech), then turns the estimates into masks that partition the mix. The masks are applied to every channel, so stems + ambient equals the recording and the inter-channel cues survive for DOA. Diffuse classes (wind, rain, insects, crowd) stay in the ambient bed. Writes `separate/stems/<id>.wav`, `separate/ambient.wav` and `separate/stems.json`.
