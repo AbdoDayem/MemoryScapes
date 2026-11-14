@@ -2,23 +2,32 @@ import type { MemoryManifest, Vec3 } from "@memoryscapes/manifest";
 
 /**
  * Runtime spatializer: one HRTF PannerNode per placed source, plus an ambient bed.
- * Ambisonic beds will need a decoder such as Omnitone or Resonance Audio.
+ *
+ * Every buffer is decoded before anything starts, and all of them start on one
+ * AudioContext time: the separation stage splits the recording so that stems + ambient
+ * add back up to it, which only holds if they stay sample-aligned. Unplaced (diffuse)
+ * sources and stereo/mono beds play without spatialization. Ambisonic beds still need a
+ * decoder (Omnitone or Resonance Audio); until then they play as plain channels.
  */
 export class SpatialAudioEngine {
   private ctx = new AudioContext();
-  private panners = new Map<string, PannerNode>();
+  private nodes: AudioBufferSourceNode[] = [];
+  private startedAt: number | null = null;
+  private duration = 0;
 
-  async load(manifest: MemoryManifest): Promise<void> {
-    for (const src of manifest.audio.sources) {
-      const buffer = await this.fetchBuffer(src.url);
-      const node = this.ctx.createBufferSource();
-      node.buffer = buffer;
-      node.loop = src.loop ?? true;
+  /** resolve: manifest URL (relative to the memory) -> fetchable URL. */
+  constructor(private resolve: (url: string) => string = (u) => u) {}
 
-      const gain = this.ctx.createGain();
-      gain.gain.value = src.gain ?? 1;
-
-      if (src.position) {
+  async load(manifest: MemoryManifest, onProgress?: (done: number, total: number) => void): Promise<void> {
+    const { sources, ambient_bed: bed } = manifest.audio;
+    const jobs: { url: string; build: (buffer: AudioBuffer) => AudioNode }[] = sources.map((src) => ({
+      url: src.url,
+      build: () => {
+        const gain = new GainNode(this.ctx, { gain: src.gain ?? 1 });
+        if (!src.position) {
+          gain.connect(this.ctx.destination); // diffuse: not spatialized
+          return gain;
+        }
         const panner = new PannerNode(this.ctx, {
           panningModel: "HRTF",
           distanceModel: "inverse",
@@ -28,36 +37,88 @@ export class SpatialAudioEngine {
           positionY: src.position[1],
           positionZ: src.position[2],
         });
-        node.connect(gain).connect(panner).connect(this.ctx.destination);
-        this.panners.set(src.id, panner);
-      } else {
-        node.connect(gain).connect(this.ctx.destination); // diffuse
-      }
-      node.start();
+        gain.connect(panner).connect(this.ctx.destination);
+        return gain;
+      },
+    }));
+    if (bed) {
+      if (bed.format.startsWith("ambisonic")) console.warn("Ambisonic bed played without decoding");
+      jobs.push({ url: bed.url, build: () => this.ctx.destination });
     }
-    // TODO: ambient bed (stereo or ambisonic decode).
+
+    let done = 0;
+    const buffers = await Promise.all(
+      jobs.map(async (job) => {
+        const buffer = await this.fetchBuffer(job.url);
+        onProgress?.(++done, jobs.length);
+        return buffer;
+      }),
+    );
+    this.duration = Math.max(0, ...buffers.map((b) => b.duration));
+    this.nodes = buffers.map((buffer, i) => {
+      const node = new AudioBufferSourceNode(this.ctx, { buffer, loop: true });
+      // Loop everything over the longest buffer so the layers stay aligned.
+      node.loopEnd = this.duration;
+      node.connect(jobs[i].build(buffer));
+      return node;
+    });
+  }
+
+  /** Start every layer together. Must follow a user gesture (autoplay rules). */
+  async start(): Promise<void> {
+    await this.ctx.resume();
+    if (this.startedAt !== null) return;
+    const at = this.ctx.currentTime + 0.1;
+    for (const node of this.nodes) node.start(at);
+    this.startedAt = at;
+  }
+
+  get hasAudio(): boolean {
+    return this.nodes.length > 0;
+  }
+
+  /** Seconds into the recording, or null before start(). Wraps at the loop. */
+  get playbackTime(): number | null {
+    if (this.startedAt === null || this.duration === 0) return null;
+    return Math.max(0, this.ctx.currentTime - this.startedAt) % this.duration;
   }
 
   /** Call every frame with the camera pose. */
   updateListener(position: Vec3, forward: Vec3, up: Vec3): void {
     const l = this.ctx.listener;
-    l.positionX.value = position[0];
-    l.positionY.value = position[1];
-    l.positionZ.value = position[2];
-    l.forwardX.value = forward[0];
-    l.forwardY.value = forward[1];
-    l.forwardZ.value = forward[2];
-    l.upX.value = up[0];
-    l.upY.value = up[1];
-    l.upZ.value = up[2];
+    if (!l.positionX) {
+      // Firefox: no AudioParams on the listener, only the older setters.
+      l.setPosition(...position);
+      l.setOrientation(...forward, ...up);
+      return;
+    }
+    const t = this.ctx.currentTime;
+    l.positionX.setValueAtTime(position[0], t);
+    l.positionY.setValueAtTime(position[1], t);
+    l.positionZ.setValueAtTime(position[2], t);
+    l.forwardX.setValueAtTime(forward[0], t);
+    l.forwardY.setValueAtTime(forward[1], t);
+    l.forwardZ.setValueAtTime(forward[2], t);
+    l.upX.setValueAtTime(up[0], t);
+    l.upY.setValueAtTime(up[1], t);
+    l.upZ.setValueAtTime(up[2], t);
   }
 
-  resume(): Promise<void> {
-    return this.ctx.resume();
+  async dispose(): Promise<void> {
+    for (const node of this.nodes) {
+      try {
+        node.stop();
+      } catch {
+        // never started
+      }
+    }
+    this.nodes = [];
+    await this.ctx.close();
   }
 
   private async fetchBuffer(url: string): Promise<AudioBuffer> {
-    const res = await fetch(url);
+    const res = await fetch(this.resolve(url));
+    if (!res.ok) throw new Error(`Audio ${url}: HTTP ${res.status}`);
     return this.ctx.decodeAudioData(await res.arrayBuffer());
   }
 }

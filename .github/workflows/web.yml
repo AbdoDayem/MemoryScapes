@@ -1,0 +1,28 @@
+name: web
+
+on:
+  push:
+    branches: [main]
+    paths: ["apps/web/**", "packages/manifest/**", "package.json", "package-lock.json", ".github/workflows/web.yml"]
+  pull_request:
+    paths: ["apps/web/**", "packages/manifest/**", "package.json", "package-lock.json", ".github/workflows/web.yml"]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck --workspace @memoryscapes/web
+      - run: npm test --workspace @memoryscapes/web
+      - run: npm run build --workspace @memoryscapes/web
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"

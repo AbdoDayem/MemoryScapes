@@ -30,3 +30,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.egg-info/
+
+# TypeScript incremental build info
+*.tsbuildinfo
