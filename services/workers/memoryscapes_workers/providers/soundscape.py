@@ -1,8 +1,9 @@
 """SoundscapeProvider adapter: turns localized stems into the memory's soundscape.
 
 Providers:
-- StubProvider: passes the localized stems through as object-based audio for the web
-  app's own SpatialAudioEngine. Always works; used in development and as the fallback.
+- StubProvider: passes the localized sources through (ids, positions, levels) without a
+  SATIE script. For tests and offline work, and what's kept when SATIE fails; the viewer
+  plays no sound for it, since sound is always SATIE's.
 - SatieMcpProvider: drives SATIE (Attractor Labs) through its MCP server, following the
   workflow its skill prescribes (github.com/Attractor-Laboratories/satie-skills):
       satie_inspect_scene -> satie_brief -> satie_compose -> satie_audit_scene -> satie_realize

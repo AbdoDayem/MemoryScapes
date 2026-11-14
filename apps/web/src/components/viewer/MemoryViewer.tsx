@@ -8,9 +8,11 @@
  * - Walk with WASD/arrows (Shift: faster, Q/E: down/up), drag to look. Movement stays
  *   inside navigation.walkable_bounds: the box and corridor around the capture path,
  *   where the splat is reliable.
- * - "Replay capture" follows poses/path.json, synced to the audio when it's playing.
- * - Audio starts from a click (browser autoplay rules): placed sources are spatialized
- *   with HRTF panners, the ambient bed (or the original recording) plays as is.
+ * - "Replay capture" follows poses/path.json.
+ * - Sound is always SATIE's: its runtime plays the memory's SATIE soundscape, with each
+ *   localized source a host at its position and the camera as the listener. It starts
+ *   from a click (browser autoplay rules). The "Sound by SATIE" badge shows, and SATIE's
+ *   mixer in development. A memory without a SATIE soundscape plays no sound and says why.
  *
  * Splat, audio positions and camera share one metric frame (+y up), so nothing is
  * transformed here.
@@ -19,7 +21,7 @@
 import type { MemoryManifest, Vec3 } from "@memoryscapes/manifest";
 import { useEffect, useRef, useState } from "react";
 
-import { SpatialAudioEngine } from "@/components/audio/SpatialAudioEngine";
+import { SatieAudioEngine } from "@/components/audio/SatieAudioEngine";
 import { getMemory, type MemoryResponse } from "@/lib/api";
 
 import { asWalkable, clampToWalkable, samplePath, type CapturePath } from "./navigation";
@@ -41,7 +43,8 @@ export default function MemoryViewer({ memoryId }: { memoryId: string }) {
   const [audioState, setAudioState] = useState<AudioState>("none");
   const [replay, setReplay] = useState(false);
   const replayRef = useRef(false);
-  const audioRef = useRef<SpatialAudioEngine | null>(null);
+  const [audioNote, setAudioNote] = useState<string | null>(null);
+  const audioRef = useRef<SatieAudioEngine | null>(null);
 
   replayRef.current = replay;
 
@@ -91,11 +94,14 @@ export default function MemoryViewer({ memoryId }: { memoryId: string }) {
     if (!manifest || !assetBase || !container.current) return;
     let disposed = false;
     let cleanup = () => {};
+    let resolveThree: (t: ThreeHandles) => void = () => {};
+    const three = new Promise<ThreeHandles>((r) => (resolveThree = r));
     mountScene(container.current, manifest, assetBase, {
       isDisposed: () => disposed,
       setLodStatus,
       replay: () => replayRef.current,
       audio: () => audioRef.current,
+      onReady: (t) => resolveThree(t),
     })
       .then((c) => {
         if (disposed) c();
@@ -106,25 +112,64 @@ export default function MemoryViewer({ memoryId }: { memoryId: string }) {
         setPhase("error");
       });
 
-    // Decode the audio up front; it starts on the user's click.
+    // Load SATIE's soundscape up front; it starts on the user's click.
     const resolve = (u: string) => new URL(u, assetBase).toString();
-    const engine = new SpatialAudioEngine(resolve);
-    audioRef.current = engine;
-    const hasAudio = manifest.audio.sources.length > 0 || !!manifest.audio.ambient_bed;
-    if (hasAudio) {
+    const satieOut = manifest.audio.satie;
+    const engine = new SatieAudioEngine(resolve);
+    let badge: { destroy(): void; setPanelOpen(open: boolean): void } | null = null;
+    let mixer: { destroy(): void; open(): void } | null = null;
+    if (!satieOut) {
+      const why = manifest.audio.soundscape_provider?.fallback_reason;
+      setAudioNote(why ? `No SATIE soundscape: ${why}` : "No SATIE soundscape for this memory yet.");
+    } else {
       setAudioState("loading");
-      engine
-        .load(manifest)
-        .then(() => !disposed && setAudioState("ready"))
+      const dev = process.env.NODE_ENV !== "production";
+      const loaded = engine.load(manifest);
+      // The credit SATIE's licence asks for; its "loading sounds" line shows until `ready`.
+      import("satie-runtime/badge")
+        .then(({ badge: mount }) => {
+          if (!disposed) badge = mount({ dev, ready: loaded, onOpen: () => mixer?.open() });
+        })
+        .catch((err) => console.warn("SATIE badge:", err));
+      loaded
+        .then(async () => {
+          if (disposed) return;
+          if (engine.warnings.length) console.warn("SATIE:", engine.warnings);
+          audioRef.current = engine;
+          setAudioState("ready");
+          const runtime = engine.runtime;
+          if (!dev || !runtime) return;
+          // SATIE's mixer (development only): every voice as a row and a dot in the world.
+          const { scene, camera, renderer, look, teleport } = await three;
+          const { mountMixer } = await import("satie-runtime/three");
+          if (disposed) return;
+          mixer = mountMixer(runtime, {
+            scene, camera, renderer, look, teleport,
+            script: resolve(satieOut.script_url),
+            collapsed: true,
+            // These go through SATIE's Vite dev plugin, which a Next.js app doesn't have.
+            capture: false,
+            eventUrl: null,
+            historyUrl: null,
+            nowUrl: null,
+            watchUrl: null,
+            context: () => runtime.authoringContext(),
+            onOpenChange: (open: boolean) => badge?.setPanelOpen(open),
+          });
+        })
         .catch((err) => {
-          console.error(err);
-          if (!disposed) setAudioState("error");
+          console.error("SATIE soundscape:", err);
+          if (disposed) return;
+          setAudioState("error");
+          setAudioNote(`SATIE soundscape didn't load: ${err instanceof Error ? err.message : err}`);
         });
     }
     return () => {
       disposed = true;
       cleanup();
       audioRef.current = null;
+      mixer?.destroy();
+      badge?.destroy();
       void engine.dispose();
     };
   }, [manifest, assetBase]);
@@ -159,9 +204,7 @@ export default function MemoryViewer({ memoryId }: { memoryId: string }) {
                 <AudioButton state={audioState} onStart={startAudio} />
                 <button onClick={() => setReplay((r) => !r)}>{replay ? "Walk freely" : "Replay capture"}</button>
               </div>
-              {manifest?.audio.soundscape_provider?.fallback_reason && (
-                <div style={{ opacity: 0.6, marginTop: 6 }}>{manifest.audio.soundscape_provider.fallback_reason}</div>
-              )}
+              {audioNote && <div style={{ opacity: 0.6, marginTop: 6 }}>{audioNote}</div>}
             </>
           )}
         </div>
@@ -202,11 +245,21 @@ function AudioButton({ state, onStart }: { state: AudioState; onStart: () => voi
   );
 }
 
+/** What SATIE's mixer needs from the scene (see satie-runtime/three mountMixer). */
+interface ThreeHandles {
+  scene: import("three").Scene;
+  camera: import("three").PerspectiveCamera;
+  renderer: import("three").WebGLRenderer;
+  look: { get(): { yaw: number; pitch: number }; set(yaw: number, pitch: number): void };
+  teleport: (x: number, z: number, yaw: number) => void;
+}
+
 interface SceneHooks {
   isDisposed: () => boolean;
   setLodStatus: (s: string) => void;
   replay: () => boolean;
-  audio: () => SpatialAudioEngine | null;
+  audio: () => SatieAudioEngine | null;
+  onReady?: (three: ThreeHandles) => void;
 }
 
 /** Builds the three.js scene; returns a cleanup function. */
@@ -309,7 +362,7 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
     const audio = hooks.audio();
     if (hooks.replay() && path) {
       if (!wasReplay) replayStart = clock.elapsedTime;
-      const t = audio?.playbackTime ?? clock.elapsedTime - replayStart + (path.samples[0]?.t ?? 0);
+      const t = clock.elapsedTime - replayStart + (path.samples[0]?.t ?? 0);
       const pose = samplePath(path, t);
       if (pose) {
         camera.position.fromArray(pose.position);
@@ -337,11 +390,28 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
     }
     wasReplay = hooks.replay() && !!path;
     if (audio) {
-      camera.getWorldDirection(forward);
-      const camUp = up.clone().applyQuaternion(camera.quaternion);
-      audio.updateListener(camera.position.toArray() as Vec3, forward.toArray() as Vec3, camUp.toArray() as Vec3);
+      camera.updateMatrixWorld(); // SATIE reads the listener from the camera's world matrix
+      audio.update(camera);
     }
     renderer.render(scene, camera);
+  });
+
+  hooks.onReady?.({
+    scene,
+    camera,
+    renderer,
+    look: {
+      get: () => ({ yaw: euler.y, pitch: euler.x }),
+      set: (yaw, pitch) => {
+        euler.set(pitch, yaw, 0, "YXZ");
+        camera.quaternion.setFromEuler(euler);
+      },
+    },
+    teleport: (x, z, yaw) => {
+      camera.position.fromArray(clampToWalkable([x, camera.position.y, z], walkable, minY));
+      euler.set(euler.x, yaw, 0, "YXZ");
+      camera.quaternion.setFromEuler(euler);
+    },
   });
 
   return () => {

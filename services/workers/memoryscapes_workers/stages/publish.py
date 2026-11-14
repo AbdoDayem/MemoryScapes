@@ -9,8 +9,9 @@ Not yet (needed before ``unlisted``/``public``, which this stage refuses until t
 - Render a thumbnail and a 5-second fly-through preview for globe pins; warm the CDN.
 
 Reads   splat/lods.json, poses/navigation.json, ingest/meta.json,
-        soundscape/scene.json (optional: without it the original recording is the
-        ambient bed, played without spatialization, as in build phase 1)
+        soundscape/scene.json (optional: without it the memory has no sound, since sound
+        always comes from SATIE after separation and localization; the original
+        recording is still listed as the ambient bed)
 Writes  publish/manifest.json
 
 Asset URLs in the manifest are keys relative to the memory root, e.g.
@@ -133,8 +134,8 @@ def build_manifest(memory_id: str, *, version: int, lods: dict, navigation: dict
     else:
         audio = {"sources": [], "soundscape_provider": {
             "name": "none",
-            "fallback_reason": "The audio stages haven't run; the original recording plays "
-                               "without spatialization."}}
+            "fallback_reason": "The audio stages haven't run yet. Sound comes from SATIE once "
+                               "the recording is separated and localized."}}
         if has_audio:
             layout = (ingest_meta.get("mic") or {}).get("layout", "stereo")
             audio["ambient_bed"] = {"url": "ingest/audio.wav",

@@ -18,11 +18,15 @@ relative URLs against the returned `asset_base`.
   +Y-up world frame that the poses and audio positions share.
 - **Walking:** WASD/arrows (Shift runs, Q/E down/up), drag to look. Movement is clamped to
   `navigation.walkable_bounds` (box, corridor around the capture path, floor).
-- **Replay capture:** follows `poses/path.json`, synced to the audio clock when sound is on.
-- **Audio:** `components/audio/SpatialAudioEngine.ts` decodes every layer first and starts
-  them on one clock (stems + ambient add back up to the recording only when aligned).
-  Placed sources get HRTF panners; diffuse sources and the ambient bed play as is.
-  Without the audio stages, the ambient bed is the original recording.
+- **Replay capture:** follows `poses/path.json`.
+- **Sound is always SATIE's.** `components/audio/SatieAudioEngine.ts` loads the memory's
+  SATIE script and `samples.json` with `satie-runtime/three`. Each localized source is bound
+  as a host at its position, and the camera is the listener.
+  - The "Sound by SATIE" badge shows; SATIE's licence requires it. In development, SATIE's
+    mixer opens from the badge (or the backquote key) with every voice as a dot in the world.
+  - A memory without SATIE output plays no sound and shows why.
+  - `satie-runtime` is installed from satie.world (pinned to 0.4.8 in `package.json`). It's
+    proprietary, but its licence allows bundling it unmodified in our app.
 
 ## Try a memory locally
 

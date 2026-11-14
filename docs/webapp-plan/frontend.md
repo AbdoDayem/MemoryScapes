@@ -16,7 +16,7 @@ Next.js 15, React 19, TypeScript. Run with `npm run dev:web` from the repo root
 | `/memories/[id]` | `src/app/memories/[id]/page.tsx` → `components/viewer/MemoryViewer.tsx` | **Works** (Marko, PR #5): the 3D scene with its sound. While processing it polls `getMemory` every 5 s and shows a simple ✓/… list of stages. |
 
 Also: `src/lib/api.ts` (`MemoryResponse` type, `getMemory`, `queryGlobe`, pointing at
-`NEXT_PUBLIC_API_URL`, default `http://localhost:8000`), `components/audio/SpatialAudioEngine.ts`
+`NEXT_PUBLIC_API_URL`, default `http://localhost:8000`), `components/audio/SatieAudioEngine.ts` (sound is always SATIE's)
 and `components/viewer/navigation.ts` (the viewer's). Scripts: `npm run typecheck` and
 `npm test --workspace @memoryscapes/web`. CI: `.github/workflows/web.yml`.
 

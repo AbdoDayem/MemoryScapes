@@ -130,14 +130,14 @@ This is the hardest part. Most uploads will be phone recordings: mono or stereo,
 The output is a list of `{stem_id, label, position[x,y,z] | trajectory, spread, confidence, gain}` in the splat's world frame.
 
 ### 4f. SATIE integration (`stages/soundscape.py`, `providers/soundscape.py`)
-- SATIE is isolated behind a **`SoundscapeProvider` adapter**, so its API can change without touching the pipeline, and it can be stubbed in development (`SOUNDSCAPE_PROVIDER=stub`).
+- **SATIE always does the spatialization.** It's the default provider, and the viewer plays only SATIE soundscapes. It's isolated behind a **`SoundscapeProvider` adapter**, so its API can change without touching the pipeline. Tests and offline work use `SOUNDSCAPE_PROVIDER=stub`, which gives a memory without sound.
 - **SATIE runs through its MCP server** (`https://www.satie.world/mcp`, documented in [Attractor-Laboratories/satie-skills](https://github.com/Attractor-Laboratories/satie-skills)). The adapter follows the skill's workflow:
   1. `satie_inspect_scene`: our placed sources become hosts, at their world positions unchanged (metres, +Y up).
   2. `satie_brief` → `satie_compose`: a generated brief tells SATIE to use the user's own stems as clips named `memory/<id>`. If the script drops a clip, there's one revision round.
   3. `satie_audit_scene` → `satie_realize`: capped by `SATIE_MAX_CENTS` (default 0), with a stable `requestKey` so a retry resumes rather than re-buys.
-- **Output:** a `.satie` script plus `samples.json`, played in the viewer by `satie-runtime`, which binds each host at its source's position. Spatialization stays on the client, so free-roaming navigation works. The manifest also keeps the object-based sources, so the viewer can fall back to its own `SpatialAudioEngine`.
-- If SATIE fails or would go over budget, the stage falls back to the stub and records why.
-- **Still unverified against the live server:** the scene manifest shape (`satie://schema/scene`), whether `realize` accepts our own stem URLs (and SATIE's 30 s audio limit), and headless auth for a worker. See `services/workers/README.md`.
+- **Output:** a `.satie` script plus `samples.json`, played in the viewer by `satie-runtime`, which binds each host at its source's position. Spatialization stays on the client, so free-roaming navigation works. The manifest keeps the sources' positions, which are where the hosts are bound.
+- If SATIE fails or would go over budget, the memory still publishes (splat and source positions) without sound. The reason is recorded and shown in the viewer, and re-running the stage tries again.
+- **Checked against the live server:** the scene manifest, our stems as `provided` samples at 0¢, and uploads. A worker signs in once with `memoryscapes-worker satie-login`. See `services/workers/README.md`.
 
 ### 4g. Privacy and publish (`stages/publish.py`)
 - Before anything goes public, **blur faces and license plates in the source frames and retrain**, or mask them in the splat.

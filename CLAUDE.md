@@ -10,7 +10,7 @@ Partly a scaffold: most API endpoints still return `501`. In the workers, the vi
 
 | Path | What lives there |
 |---|---|
-| `apps/web` | Next.js 15 + React 19 + TypeScript client. Routes: `/` globe, `/upload`, `/memories/[id]` viewer. Spatial audio in `src/components/audio/SpatialAudioEngine.ts`. |
+| `apps/web` | Next.js 15 + React 19 + TypeScript client. Routes: `/` globe, `/upload`, `/memories/[id]` viewer. Sound is always SATIE's: `src/components/audio/SatieAudioEngine.ts` plays the SATIE soundscape with `satie-runtime`. |
 | `services/api` | FastAPI (Python 3.11+). Entry `app/main.py`, routers in `app/routers/`, Pydantic models in `app/models.py`. |
 | `services/workers` | Processing pipeline. DAG in `memoryscapes_workers/pipeline.py`, one module per stage in `stages/`, SATIE adapter in `providers/soundscape.py`. |
 | `packages/manifest` | Memory manifest contract: `memory.schema.json` (source of truth) + `index.ts` (TS mirror). |
@@ -43,9 +43,9 @@ cd tools/debugger && npm test                                        # debugger 
 - **Stage outputs are a contract with other teams.** The splat side is specified in `docs/SPLAT_OUTPUTS.md`. When you change what a stage writes, update that doc or `services/workers/README.md`, plus `tools/debugger/src/lib/types.ts` and its checks.
 - **Stages are idempotent** and write only under `{memory_id}/{stage}/` through `ctx.storage` (`StageContext.key`). A stage must be safe to re-run.
 - **Model backends are injected.** Stages take tagger/separator/detector/provider arguments, and `backends.py` builds the real ones from env. Tests use fakes and synthetic scenes with known ground truth; keep it that way so tests never need torch or network.
-- **SATIE stays behind `SoundscapeProvider`** (`providers/soundscape.py`, MCP via `providers/mcp_transport.py`). Don't call it from anywhere else. Use `SOUNDSCAPE_PROVIDER=stub` for local work. Store raw provider output so audio can be re-rendered.
+- **SATIE stays behind `SoundscapeProvider`** (`providers/soundscape.py`, MCP via `providers/mcp_transport.py`). Don't call it from anywhere else. `SOUNDSCAPE_PROVIDER` defaults to `satie`; `stub` is for tests and offline work only (the memory then has no sound). Store raw provider output so audio can be re-rendered.
 - **SATIE spends money.** Never raise `SATIE_MAX_CENTS` or enable `SATIE_ALLOW_GENERATION` without the developer asking. Keep `requestKey` stable for the same script so retries resume instead of re-buying.
-- **Spatialization happens on the client.** Prefer object-based audio (sources + positions). Fall back to ambisonics, never a fixed binaural render.
+- **SATIE always does the spatialization, on the client.** The viewer plays sound only through `satie-runtime`, with each localized source bound as a host at its position and the camera as the listener. Don't add another spatializer or a fixed binaural render. Keep the "Sound by SATIE" badge (its licence requires it).
 - **Keep heavy ML dependencies optional** (`[visual]`, `[audio]` extras) so the API and CI stay light.
 - **Privacy before public.** Nothing becomes `public` without the publish stage's face/plate blur and speech check.
 - Never commit `.env`, real credentials, or pipeline outputs (`*.ply`, `*.spz`, `data/`).

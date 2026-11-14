@@ -1,4 +1,6 @@
-"""Soundscape generation through the configured SoundscapeProvider (SATIE or stub).
+"""Soundscape generation: SATIE arranges the localized stems (SOUNDSCAPE_PROVIDER, default
+"satie"; "stub" only for tests and offline work). The viewer plays sound only through
+SATIE's runtime, so a memory without SATIE output has no sound.
 
 Inputs:  localize/sources.json, separate/stems.json
 Outputs:
@@ -7,8 +9,10 @@ Outputs:
     soundscape/satie/samples.json  SATIE samples        (saved as returned, never edited)
     soundscape/satie/raw.json      every tool response, for debugging and re-rendering
 
-If SATIE fails and SOUNDSCAPE_FALLBACK=stub (the default), the memory still gets the
-object-based soundscape, and scene.json records why SATIE was skipped.
+If SATIE fails and SOUNDSCAPE_FALLBACK=stub (the default), the stage still finishes, so
+the memory publishes with its splat and source positions but without sound. scene.json
+records why SATIE was skipped, and the viewer shows it. Re-run the stage to try SATIE
+again; the same script resumes its realize instead of buying again.
 
 SATIE's runtime loads each stem from the URL it's given, in the viewer's browser. Set
 PUBLIC_API_URL (the API's address as viewers reach it) so those URLs point at the API's
@@ -65,7 +69,7 @@ def run(
     fallback: SoundscapeProvider | None = None,
     mood_prompt: str | None = None,
 ) -> dict:
-    provider = provider or get_provider(os.environ.get("SOUNDSCAPE_PROVIDER", "stub"))
+    provider = provider or get_provider(os.environ.get("SOUNDSCAPE_PROVIDER", "satie"))
     if fallback is None and os.environ.get("SOUNDSCAPE_FALLBACK", "stub") == "stub":
         fallback = StubProvider()
     request = build_request(ctx, mood_prompt)

@@ -71,13 +71,13 @@ This is the deploy path. From `services/workers`, in PowerShell:
    That runs ingest → poses → splat (`trainer=auto` picks gsplat on CUDA) → separate → localize → soundscape → publish.
 7. Serve and view it: `cd ..\api; uvicorn app.main:app --port 8000`, then `npm run dev:web` from the repo root. Open http://localhost:3000/memories/mem_1 and press **Start sound**. Placed sources pan and get louder as you walk.
 
-Settings go in `<repo>\.env`, which is git-ignored and loaded by the CLI; real environment variables win. For example `SOUNDSCAPE_PROVIDER=satie`, `STORAGE_ROOT=D:\memoryscapes`. Keep `SATIE_MAX_CENTS=0` and `SATIE_ALLOW_GENERATION=false` unless the team agrees otherwise: SATIE should only arrange the recorded sounds.
+Settings go in `<repo>\.env`, which is git-ignored and loaded by the CLI; real environment variables win. For example `STORAGE_ROOT=D:\memoryscapes`. Keep `SATIE_MAX_CENTS=0` and `SATIE_ALLOW_GENERATION=false` unless the team agrees otherwise: SATIE should only arrange the recorded sounds.
 
 To use SATIE on the server:
 1. `.venv\Scripts\pip install -e ".[satie]"`.
 2. Sign the server in once with its own SATIE account: `.venv\Scripts\memoryscapes-worker satie-login`. A browser opens on satie.world; after you sign in, it returns to `localhost` and the worker saves a refresh token to `<repo>\.satie\worker-token.json`. That file is git-ignored; keep it private, and set `SATIE_TOKEN_FILE` to store it elsewhere. Over SSH, or with the browser on another machine, use `satie-login --paste` and paste the `localhost` address the browser lands on.
 3. Check it with `memoryscapes-worker satie-login --status`. It shows the plan and balance, never the token.
-4. Set `SOUNDSCAPE_PROVIDER=satie`. The worker then refreshes its access token by itself. If the login is revoked, the stage falls back to the stub and `soundscape/scene.json` says to run `satie-login` again. A `SATIE_MCP_TOKEN` in the environment overrides the saved login.
+4. SATIE is the default provider (`SOUNDSCAPE_PROVIDER=satie`). The worker refreshes its access token by itself. If the login is revoked, the memory publishes without sound, and `soundscape/scene.json` and the viewer say to run `satie-login` again. A `SATIE_MCP_TOKEN` in the environment overrides the saved login.
 5. The viewer's SATIE runtime loads each stem from the URL the worker gave SATIE. Set `PUBLIC_API_URL` to the API's address as viewers reach it (for example `https://memories.example.org`, not `localhost`), and the stems are linked as `<PUBLIC_API_URL>/memories/<id>/files/...`.
 
 Capture tips that matter most:
@@ -163,10 +163,12 @@ All keys are relative to `{memory_id}/` in storage (`LocalStorage` in dev/tests,
 Writes `localize/sources.json` with position, spread, confidence, method, and a level corrected to 1 m. Moving sources are placed at their dominant location for now.
 
 **soundscape**: hands the sources to the configured provider.
-- `SOUNDSCAPE_PROVIDER=stub` passes them through as object-based audio for the web app's `SpatialAudioEngine`.
-- `SOUNDSCAPE_PROVIDER=satie` drives SATIE's MCP server (`satie_inspect_scene` → `satie_brief` → `satie_compose` → `satie_audit_scene` → `satie_realize`). Our sources are hosts with unchanged world positions, and our stems are clips named `memory/<id>`. The output is `soundscape/satie/scene.satie` and `samples.json`, for `satie-runtime`.
+- Sound is always SATIE's: the viewer plays it with `satie-runtime`, binding each host at its source's position.
+- `SOUNDSCAPE_PROVIDER=satie` (the default) drives SATIE's MCP server (`satie_inspect_scene` → `satie_brief` → `satie_compose` → `satie_audit_scene` → `satie_realize`). Our sources are hosts with unchanged world positions, and our stems are clips named `memory/<id>`. The output is `soundscape/satie/scene.satie` and `samples.json`, for `satie-runtime`.
 - Spending is capped by `SATIE_MAX_CENTS`, default 0. Retries reuse the same `requestKey`, so a re-run resumes the purchase instead of buying again.
-- If SATIE fails, the stage falls back to the stub and records why in `soundscape/scene.json`.
+- `SOUNDSCAPE_PROVIDER=stub` is for tests and offline work. It keeps the sources but writes no SATIE script, so the memory has no sound.
+- If SATIE fails, the memory still publishes without sound, and `soundscape/scene.json` records why. Re-run `--stages soundscape,publish` to try again.
+- **Quota:** each memory takes one SATIE composition, or two when the script needs a revision. The Free plan has 3 a month.
 
 ### SATIE against the live server (checked 2026-11-14)
 
