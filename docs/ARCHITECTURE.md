@@ -2,6 +2,8 @@
 
 MemoryScapes turns a video (or a set of panoramic images) plus an audio recording into a **memory**: a Gaussian splat you can walk through, with the recording separated into sources, placed in 3D and rebuilt into a soundscape by SATIE (Attractor Labs). Users can publish memories to a shared globe and explore other people's.
 
+A styled version of this document with diagrams is in [architecture.html](architecture.html). Open it in a browser.
+
 ## 1. High-level shape
 
 ```mermaid

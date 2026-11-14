@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Memory Globe Architecture</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: single reading column (~920px) with full-width diagrams; color encodes pipeline lane — teal = visual, amber = audio, slate = platform */
+:root {
+  --bg: #F4F6F7; --surface: #FFFFFF; --ink: #15212B; --muted: #56656F; --line: #D5DDE1;
+  --visual: #0D7A80; --visual-soft: #DDF0F0;
+  --audio: #B45309; --audio-soft: #FBEBD8;
+  --plat: #475569; --plat-soft: #E6EAEF;
+  --code-bg: #EDF1F3;
+  --f-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --f-body: "Inter", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0E151B; --surface: #152029; --ink: #E4EBEF; --muted: #94A4AE; --line: #2A3944;
+  --visual: #4FC3C8; --visual-soft: #12343A; --audio: #F0A35A; --audio-soft: #3A2716;
+  --plat: #A3B2C2; --plat-soft: #1F2B36; --code-bg: #111B22; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0E151B; --surface: #152029; --ink: #E4EBEF; --muted: #94A4AE; --line: #2A3944;
+  --visual: #4FC3C8; --visual-soft: #12343A; --audio: #F0A35A; --audio-soft: #3A2716;
+  --plat: #A3B2C2; --plat-soft: #1F2B36; --code-bg: #111B22; color-scheme: dark; }
+
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15.5px; line-height: 1.6; }
+.wrap { max-width: 960px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 48px 80px; display: flex; flex-direction: column; gap: 56px; }
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font-size: clamp(2rem, 5vw, 2.9rem); font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: 1.55rem; font-weight: 600; letter-spacing: -0.01em; }
+h3 { font-size: 1.08rem; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+.eyebrow { font-family: var(--f-mono); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+section { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.lede { font-size: 1.1rem; color: var(--muted); max-width: 62ch; }
+header { display: flex; flex-direction: column; gap: 16px; }
+code, .mono { font-family: var(--f-mono); font-size: 0.86em; }
+:not(pre) > code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+a { color: var(--visual); }
+a:focus-visible { outline: 2px solid var(--visual); outline-offset: 2px; }
+
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.9rem; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding-block: 12px; }
+nav.toc a { color: var(--muted); text-decoration: none; }
+nav.toc a:hover { color: var(--ink); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; font-size: 0.82rem; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); }
+.chip i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.chip.v i { background: var(--visual); } .chip.a i { background: var(--audio); } .chip.p i { background: var(--plat); }
+
+.three { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.pillar { padding: 18px; border-top: 3px solid var(--line); background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
+.pillar.v { border-top-color: var(--visual); } .pillar.a { border-top-color: var(--audio); } .pillar.p { border-top-color: var(--plat); }
+.pillar p { font-size: 0.93rem; color: var(--muted); }
+
+.diagram { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+.diagram svg { display: block; width: 100%; min-width: 760px; height: auto; }
+svg text { font-family: var(--f-body); }
+.b-v { fill: var(--visual-soft); stroke: var(--visual); stroke-width: 1.5; }
+.b-a { fill: var(--audio-soft); stroke: var(--audio); stroke-width: 1.5; }
+.b-p { fill: var(--plat-soft); stroke: var(--plat); stroke-width: 1.5; }
+.b-ext { fill: var(--surface); stroke: var(--audio); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.t-h { fill: var(--ink); font-size: 14px; font-weight: 600; font-family: var(--f-display); }
+.t-s { fill: var(--muted); font-size: 11.5px; }
+.t-l { fill: var(--muted); font-size: 11px; font-family: var(--f-mono); }
+.edge { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+.edge.dash { stroke-dasharray: 4 4; }
+.ah { fill: var(--muted); }
+.caption { font-size: 0.85rem; color: var(--muted); }
+
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.93rem; }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+th { font-family: var(--f-mono); font-size: 0.72rem; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+td:first-child { font-weight: 600; white-space: nowrap; }
+
+.stages { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.stage { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--plat); border-radius: 6px; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.stage.v { border-left-color: var(--visual); } .stage.a { border-left-color: var(--audio); }
+.stage.wide { grid-column: 1 / -1; }
+.stage .tag { font-family: var(--f-mono); font-size: 0.72rem; color: var(--muted); letter-spacing: 0.05em; }
+.stage ul, .stage ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font-size: 0.93rem; }
+.stage p { font-size: 0.93rem; }
+.note { font-size: 0.88rem; color: var(--muted); background: var(--audio-soft); border-radius: 4px; padding: 8px 12px; }
+
+pre { margin: 0; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 16px; overflow-x: auto; font-family: var(--f-mono); font-size: 0.82rem; line-height: 1.55; }
+.k { color: var(--visual); } .s { color: var(--audio); }
+
+.schema { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.ent { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; min-width: 0; }
+.ent h3 { font-family: var(--f-mono); font-size: 0.9rem; margin-bottom: 6px; }
+.ent div { font-family: var(--f-mono); font-size: 0.78rem; color: var(--muted); line-height: 1.7; overflow-wrap: anywhere; }
+
+.risks { display: flex; flex-direction: column; gap: 0; }
+.risk { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; padding-block: 14px; border-bottom: 1px solid var(--line); }
+.risk strong { font-family: var(--f-display); font-weight: 600; }
+.risk p { font-size: 0.93rem; color: var(--muted); }
+
+.phases { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0; counter-reset: ph; }
+.phases li { counter-increment: ph; display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 14px; padding-block: 14px; border-bottom: 1px solid var(--line); }
+.phases li::before { content: counter(ph); font-family: var(--f-display); font-weight: 700; font-size: 1.4rem; color: var(--visual); line-height: 1.2; }
+.phases strong { font-family: var(--f-display); }
+.phases p { font-size: 0.93rem; color: var(--muted); }
+
+@media (max-width: 720px) {
+  .three, .stages { grid-template-columns: minmax(0, 1fr); }
+  .risk { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  td:first-child { white-space: normal; }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">System architecture · draft v1</span>
+    <h1>Memory Globe Architecture</h1>
+    <p class="lede">A web app that turns a video (or a set of panoramas) plus an audio recording into a "memory": a Gaussian splat you can walk through, with the recording separated into sources, placed in 3D, and rebuilt into a soundscape by SATIE. Public memories live on a shared globe.</p>
+    <div class="legend">
+      <span class="chip v"><i></i>Visual pipeline</span>
+      <span class="chip a"><i></i>Audio pipeline</span>
+      <span class="chip p"><i></i>Platform</span>
+    </div>
+    <nav class="toc" aria-label="Sections">
+      <a href="#overview">Overview</a><a href="#client">Client</a><a href="#api">API</a><a href="#pipeline">Pipeline</a><a href="#manifest">Manifest</a><a href="#data">Data model</a><a href="#infra">Infrastructure</a><a href="#risks">Risks</a><a href="#phases">Phases</a>
+    </nav>
+  </header>
+
+  <section id="overview">
+    <span class="eyebrow">Overview</span>
+    <h2>Three parts, one shared coordinate frame</h2>
+    <div class="three">
+      <div class="pillar v"><h3>Processing pipeline</h3><p>A long-running, GPU-heavy workflow. Each stage is idempotent and writes its output to object storage, so a failed run resumes where it stopped.</p></div>
+      <div class="pillar a"><h3>Memory package</h3><p>A versioned manifest that places the splat, the audio sources and the metadata in one metric world frame. It is the contract between pipeline and viewer.</p></div>
+      <div class="pillar p"><h3>Viewer and globe</h3><p>Run in the browser and stream compressed splats and audio stems from a CDN. Spatial audio is rendered at runtime, so it follows the listener.</p></div>
+    </div>
+    <div class="diagram" role="img" aria-label="System diagram: browser client talks to object storage and the API service; API uses Postgres and enqueues a workflow engine that drives visual, audio, SATIE and publish workers.">
+      <svg viewBox="0 0 900 470" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+        <rect class="b-p" x="20" y="16" width="860" height="74" rx="8"/>
+        <text class="t-h" x="40" y="42">Browser client</text>
+        <text class="t-s" x="40" y="64">Upload flow  ·  Memory viewer (splat + spatial audio)  ·  Globe explorer</text>
+
+        <rect class="b-p" x="20" y="170" width="210" height="78" rx="8"/>
+        <text class="t-h" x="38" y="198">Object storage + CDN</text><text class="t-s" x="38" y="218">S3 / R2, versioned paths</text>
+        <rect class="b-p" x="345" y="170" width="210" height="78" rx="8"/>
+        <text class="t-h" x="363" y="198">API service</text><text class="t-s" x="363" y="218">auth · memories · jobs · globe</text>
+        <rect class="b-p" x="670" y="170" width="210" height="78" rx="8"/>
+        <text class="t-h" x="688" y="198">Postgres + PostGIS</text><text class="t-s" x="688" y="218">users, memories, jobs, geo</text>
+
+        <rect class="b-p" x="345" y="300" width="210" height="56" rx="8"/>
+        <text class="t-h" x="363" y="325">Workflow engine</text><text class="t-s" x="363" y="343">Temporal (Celery to start)</text>
+
+        <rect class="b-v" x="20" y="392" width="200" height="62" rx="8"/>
+        <text class="t-h" x="36" y="418">Visual workers</text><text class="t-s" x="36" y="437">GPU: poses, splats</text>
+        <rect class="b-a" x="240" y="392" width="200" height="62" rx="8"/>
+        <text class="t-h" x="256" y="418">Audio workers</text><text class="t-s" x="256" y="437">separate, label, localize</text>
+        <rect class="b-ext" x="460" y="392" width="200" height="62" rx="8"/>
+        <text class="t-h" x="476" y="418">SATIE adapter</text><text class="t-s" x="476" y="437">external service call</text>
+        <rect class="b-p" x="680" y="392" width="200" height="62" rx="8"/>
+        <text class="t-h" x="696" y="418">Privacy + publish</text><text class="t-s" x="696" y="437">blur, preview, manifest</text>
+
+        <path class="edge" d="M125,90 V168" marker-end="url(#arr)"/>
+        <text class="t-l" x="133" y="124">presigned PUT</text><text class="t-l" x="133" y="140">GET assets</text>
+        <path class="edge" d="M450,90 V168" marker-end="url(#arr)" marker-start="url(#arr)"/>
+        <text class="t-l" x="458" y="124">REST + SSE progress</text>
+        <path class="edge" d="M557,209 H668" marker-end="url(#arr)" marker-start="url(#arr)"/>
+        <path class="edge" d="M450,248 V298" marker-end="url(#arr)"/>
+        <text class="t-l" x="458" y="278">enqueue</text>
+        <path class="edge" d="M450,356 V372 H120 V390" marker-end="url(#arr)"/>
+        <path class="edge" d="M340,372 V390" marker-end="url(#arr)"/>
+        <path class="edge" d="M560,372 V390" marker-end="url(#arr)"/>
+        <path class="edge" d="M450,372 H780 V390" marker-end="url(#arr)"/>
+        <path class="edge dash" d="M36,392 V250" marker-end="url(#arr)" marker-start="url(#arr)"/>
+        <text class="t-l" x="44" y="290">stage</text><text class="t-l" x="44" y="305">artifacts</text>
+      </svg>
+    </div>
+  </section>
+
+  <section id="client">
+    <span class="eyebrow">Client</span>
+    <h2>Browser app</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Concern</th><th>Recommendation</th></tr></thead>
+      <tbody>
+        <tr><td>Framework</td><td>Next.js or React with TypeScript.</td></tr>
+        <tr><td>Splat rendering</td><td>Three.js with Spark or GaussianSplats3D (WebGL2), WebGPU path later. Load progressively: low LOD first.</td></tr>
+        <tr><td>Navigation</td><td>First-person walk/fly, constrained to a walkable volume built from the camera trajectory so users don't fly into floaters. Optional "replay the original path" mode.</td></tr>
+        <tr><td>Spatial audio</td><td>Web Audio API. Each separated source is an HRTF <code>PannerNode</code> at its 3D position, plus an ambient bed (ambisonic via Omnitone or Resonance, or stereo). The listener follows the camera.</td></tr>
+        <tr><td>Globe</td><td>globe.gl, or CesiumJS for real terrain. Clustered pins with a thumbnail or short preview loop.</td></tr>
+        <tr><td>Upload</td><td>Chunked multipart upload straight to storage with presigned URLs. Client-side checks for duration, resolution and audio presence.</td></tr>
+        <tr><td>Progress</td><td>Server-Sent Events or WebSocket streaming per-stage status from the API.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section id="api">
+    <span class="eyebrow">API service</span>
+    <h2>Backend</h2>
+    <p>FastAPI is the better fit, since it shares a language with the ML workers; NestJS also works. Auth through Clerk, Auth0 or Supabase Auth. Each memory costs GPU minutes, so enforce per-user rate limits and quotas.</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>POST /memories</code></td><td>Create a draft and return presigned upload URLs.</td></tr>
+        <tr><td><code>POST /memories/:id/process</code></td><td>Start the processing workflow.</td></tr>
+        <tr><td><code>GET /memories/:id</code></td><td>Return the manifest and processing status.</td></tr>
+        <tr><td><code>PATCH /memories/:id</code></td><td>Update title, visibility and location.</td></tr>
+        <tr><td><code>GET /globe?bbox=&amp;zoom=</code></td><td>Clustered public memories for the visible area.</td></tr>
+        <tr><td><code>POST /memories/:id/report</code></td><td>Flag a memory for moderation.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section id="pipeline">
+    <span class="eyebrow">Processing pipeline</span>
+    <h2>From upload to memory</h2>
+    <p>A workflow DAG. Every stage writes to <code>s3://memories/{id}/{stage}/</code>. The visual and audio branches run in parallel and meet at localization, which needs both camera poses and scene geometry.</p>
+    <div class="diagram" role="img" aria-label="Pipeline DAG: ingest splits into camera poses and audio separation; poses feed splat training; splat and audio feed localization; then SATIE soundscape generation; then privacy and publish.">
+      <svg viewBox="0 0 900 580" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+        <rect class="b-p" x="330" y="16" width="240" height="60" rx="8"/>
+        <text class="t-h" x="348" y="41">Ingest</text><text class="t-s" x="348" y="60">ffmpeg demux · metadata · keyframes</text>
+
+        <rect class="b-v" x="100" y="120" width="260" height="60" rx="8"/>
+        <text class="t-h" x="118" y="145">Camera poses</text><text class="t-s" x="118" y="164">COLMAP/GLOMAP or VGGT/MASt3R</text>
+        <rect class="b-a" x="540" y="120" width="260" height="60" rx="8"/>
+        <text class="t-h" x="558" y="145">Separation + labeling</text><text class="t-s" x="558" y="164">query-based separation · CLAP tags</text>
+
+        <rect class="b-v" x="100" y="222" width="260" height="60" rx="8"/>
+        <text class="t-h" x="118" y="247">Splat training</text><text class="t-s" x="118" y="266">gsplat · cleanup · .spz · LODs</text>
+
+        <rect class="b-a" x="330" y="324" width="240" height="60" rx="8"/>
+        <text class="t-h" x="348" y="349">Source localization</text><text class="t-s" x="348" y="368">AV grounding · DOA triangulation</text>
+
+        <rect class="b-ext" x="330" y="414" width="240" height="60" rx="8"/>
+        <text class="t-h" x="348" y="439">SATIE soundscape</text><text class="t-s" x="348" y="458">object-based scene via adapter</text>
+
+        <rect class="b-p" x="330" y="504" width="240" height="60" rx="8"/>
+        <text class="t-h" x="348" y="529">Privacy · preview · publish</text><text class="t-s" x="348" y="548">blur, thumbnail, manifest, CDN</text>
+
+        <path class="edge" d="M400,76 V98 H230 V118" marker-end="url(#arr2)"/>
+        <path class="edge" d="M500,76 V98 H670 V118" marker-end="url(#arr2)"/>
+        <text class="t-l" x="182" y="94">frames</text><text class="t-l" x="680" y="94">audio</text>
+        <path class="edge" d="M230,180 V220" marker-end="url(#arr2)"/>
+        <path class="edge" d="M230,282 V302 H410 V322" marker-end="url(#arr2)"/>
+        <text class="t-l" x="240" y="298">poses + geometry</text>
+        <path class="edge" d="M670,180 V302 H490 V322" marker-end="url(#arr2)"/>
+        <text class="t-l" x="680" y="250">stems + labels</text>
+        <path class="edge" d="M450,384 V412" marker-end="url(#arr2)"/>
+        <path class="edge" d="M450,474 V502" marker-end="url(#arr2)"/>
+        <path class="edge dash" d="M100,252 H60 V534 H328" marker-end="url(#arr2)"/>
+        <text class="t-l" x="68" y="410">splat assets</text>
+        <text class="t-l" x="68" y="425">+ quick preview</text>
+      </svg>
+    </div>
+    <p class="caption">Dashed box marks the external dependency. The dashed edge carries splat assets straight to publish; a low-iteration preview splat can be published early.</p>
+
+    <div class="stages">
+      <div class="stage p">
+        <span class="tag">STAGE · INGEST</span><h3>Ingest</h3>
+        <ul>
+          <li>Demux with ffmpeg. Keep the original audio channel layout and sample rate.</li>
+          <li>Pick 150–400 keyframes by sharpness (Laplacian variance) and parallax.</li>
+          <li>Panoramas: split equirectangular frames into cubemap crops, or use spherical-camera SfM (OpenSfM, COLMAP rigs).</li>
+          <li>Read GPS and capture time from EXIF or container metadata for the globe pin. If missing, the user places it.</li>
+        </ul>
+      </div>
+      <div class="stage v">
+        <span class="tag">STAGE · VISUAL</span><h3>Camera poses</h3>
+        <ul>
+          <li>Quality path: GLOMAP or COLMAP.</li>
+          <li>Fast path: feed-forward VGGT or MASt3R-SfM for poses and dense points in seconds to minutes.</li>
+          <li>Estimate metric scale from monocular metric depth, or later from phone IMU/ARKit. Audio distance falloff only sounds right in meters.</li>
+        </ul>
+      </div>
+      <div class="stage v">
+        <span class="tag">STAGE · VISUAL</span><h3>Gaussian splat</h3>
+        <ul>
+          <li>Train with gsplat (Nerfstudio Splatfacto) on an L4/A10G/A100-class GPU. Minutes per scene.</li>
+          <li>Remove floaters and crop to the trajectory's convex hull.</li>
+          <li>Compress to .spz or SOG: tens of MB instead of hundreds for raw .ply.</li>
+          <li>Produce 2–3 LOD levels for progressive streaming.</li>
+        </ul>
+      </div>
+      <div class="stage a">
+        <span class="tag">STAGE · AUDIO</span><h3>Separation and labeling</h3>
+        <ul>
+          <li>General sound events: query-based separation such as AudioSep or SAM-Audio-style "separate X" prompts.</li>
+          <li>Speech: dedicated enhancement and diarization. Music: HTDemucs.</li>
+          <li>Tag each stem with CLAP or BEATs. The residual becomes the ambient bed.</li>
+        </ul>
+      </div>
+      <div class="stage a wide">
+        <span class="tag">STAGE · AUDIO · HARDEST PART</span><h3>Source localization</h3>
+        <p>Most uploads are mono or stereo from a moving phone, so direction can't be measured directly. Use three strategies in order:</p>
+        <ol>
+          <li><strong>Audio-visual grounding (default).</strong> Match each stem's label to objects detected in the frames (Grounding DINO + SAM), then lift them to 3D with camera poses and splat depth. Birdsong goes to the tree, voices to the people.</li>
+          <li><strong>Multichannel DOA.</strong> With stereo, ambisonic or multi-mic audio, run SRP-PHAT or MUSIC per window and triangulate bearings across the known camera trajectory.</li>
+          <li><strong>Fallback.</strong> Stems that can't be placed become diffuse sources or join the ambient bed around the listener.</li>
+        </ol>
+        <p>Output per stem: <code>{stem_id, label, position | trajectory, spread, confidence, gain}</code> in the splat's world frame.</p>
+      </div>
+      <div class="stage a">
+        <span class="tag">STAGE · EXTERNAL</span><h3>SATIE integration</h3>
+        <ul>
+          <li>Wrap SATIE behind a <code>SoundscapeProvider</code> adapter so its API can change and development can use a stub.</li>
+          <li>Input: stems, positions, labels, ambient bed, scene bounds, optional mood prompt.</li>
+          <li>Prefer an object-based scene back, so spatialization happens on the client during free navigation. If only rendered audio is available, ask for ambisonics (FOA/HOA), which still rotates with the listener.</li>
+        </ul>
+        <p class="note">SATIE's actual input and output formats are unverified. Confirm them before fixing this contract.</p>
+      </div>
+      <div class="stage p">
+        <span class="tag">STAGE · PUBLISH</span><h3>Privacy and publish</h3>
+        <ul>
+          <li>Before going public, blur faces and license plates in source frames and retrain, or mask them in the splat.</li>
+          <li>Optionally detect and mute or flag speech so private conversations don't reach the globe.</li>
+          <li>Render a thumbnail and a 5-second fly-through preview for globe pins.</li>
+          <li>Write the manifest and warm the CDN.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="manifest">
+    <span class="eyebrow">Memory package</span>
+    <h2>The manifest</h2>
+    <p>Version it from day one so a memory can be reprocessed with a better trainer without breaking old links.</p>
+<pre><code>{
+  <span class="k">"id"</span>: <span class="s">"mem_123"</span>, <span class="k">"version"</span>: 3,
+  <span class="k">"coord_frame"</span>: { <span class="k">"units"</span>: <span class="s">"meters"</span>, <span class="k">"up"</span>: <span class="s">"+y"</span>, <span class="k">"origin_geo"</span>: [lat, lon, alt], <span class="k">"heading_deg"</span>: 0 },
+  <span class="k">"splat"</span>: { <span class="k">"lods"</span>: [{ <span class="k">"url"</span>: <span class="s">".../lod0.spz"</span>, <span class="k">"count"</span>: 300000 }, { <span class="k">"url"</span>: <span class="s">".../lod1.spz"</span> }] },
+  <span class="k">"navigation"</span>: { <span class="k">"spawn"</span>: {...}, <span class="k">"walkable_bounds"</span>: {...}, <span class="k">"original_path"</span>: <span class="s">".../path.json"</span> },
+  <span class="k">"audio"</span>: {
+    <span class="k">"ambient_bed"</span>: { <span class="k">"url"</span>: <span class="s">".../bed.foa.opus"</span>, <span class="k">"format"</span>: <span class="s">"ambisonic_foa"</span> },
+    <span class="k">"sources"</span>: [
+      { <span class="k">"id"</span>: <span class="s">"s1"</span>, <span class="k">"label"</span>: <span class="s">"birdsong"</span>, <span class="k">"url"</span>: <span class="s">".../s1.opus"</span>,
+        <span class="k">"position"</span>: [1.2, 3.4, -5.0], <span class="k">"trajectory"</span>: null,
+        <span class="k">"ref_distance"</span>: 2, <span class="k">"rolloff"</span>: 1, <span class="k">"gain"</span>: 0.8, <span class="k">"loop"</span>: true }
+    ],
+    <span class="k">"soundscape_provider"</span>: { <span class="k">"name"</span>: <span class="s">"satie"</span>, <span class="k">"job_id"</span>: <span class="s">"..."</span>, <span class="k">"version"</span>: <span class="s">"..."</span> }
+  },
+  <span class="k">"meta"</span>: { <span class="k">"title"</span>: <span class="s">"..."</span>, <span class="k">"captured_at"</span>: <span class="s">"..."</span>, <span class="k">"visibility"</span>: <span class="s">"public"</span>, <span class="k">"owner"</span>: <span class="s">"usr_1"</span> }
+}</code></pre>
+  </section>
+
+  <section id="data">
+    <span class="eyebrow">Data model</span>
+    <h2>Postgres + PostGIS</h2>
+    <div class="schema">
+      <div class="ent"><h3>users</h3><div>id, handle, …</div></div>
+      <div class="ent"><h3>memories</h3><div>id, owner_id, title, description, visibility [private|unlisted|public], location geography(Point), captured_at, status, manifest_version, thumbnail_url, created_at</div></div>
+      <div class="ent"><h3>memory_assets</h3><div>memory_id, version, kind, url, bytes, checksum</div></div>
+      <div class="ent"><h3>jobs</h3><div>id, memory_id, stage, status, attempts, gpu_seconds, error, started_at, finished_at</div></div>
+      <div class="ent"><h3>reports</h3><div>id, memory_id, reporter_id, reason, status</div></div>
+      <div class="ent"><h3>later</h3><div>likes, collections, follows</div></div>
+    </div>
+    <p>Put a GiST index on <code>location</code> for bounding-box queries. Cluster on the server (<code>ST_ClusterDBSCAN</code> or precomputed per-zoom tiles) so the globe stays fast at scale.</p>
+  </section>
+
+  <section id="infra">
+    <span class="eyebrow">Infrastructure</span>
+    <h2>Where it runs</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Layer</th><th>Choice</th></tr></thead>
+      <tbody>
+        <tr><td>GPU workers</td><td>Modal, RunPod, or AWS Batch/EKS with scale-to-zero. Jobs are bursty, so serverless GPU fits early.</td></tr>
+        <tr><td>Queue / workflow</td><td>Temporal for durable retries on long jobs; Celery + Redis for the MVP.</td></tr>
+        <tr><td>Storage / CDN</td><td>S3 or Cloudflare R2 with a CDN. Immutable, versioned asset paths.</td></tr>
+        <tr><td>Observability</td><td>Per-stage timings and GPU cost; Sentry and OpenTelemetry traces through the workflow.</td></tr>
+        <tr><td>Cost controls</td><td>Per-user quotas, a maximum upload length (for example 2 minutes), dedupe on content hash.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section id="risks">
+    <span class="eyebrow">Risks and decisions</span>
+    <h2>What could go wrong</h2>
+    <div class="risks">
+      <div class="risk"><strong>Localizing phone audio</strong><p>Placing sources from a single mono mic is ill-posed. Lean on audio-visual grounding and show users which sources are "placed" and which are "ambient".</p></div>
+      <div class="risk"><strong>Capture quality</strong><p>Splat quality depends on how the scene was filmed. Show capture guidance (move slowly, orbit, avoid rotating in place) and fail early at SfM with a useful error.</p></div>
+      <div class="risk"><strong>Coordinate alignment</strong><p>Splat, audio positions and geolocation must share one frame and one scale. Keep that in the manifest from the first version.</p></div>
+      <div class="risk"><strong>Privacy on a public globe</strong><p>Faces, plates, speech and exact home locations. Offer location fuzzing (snap to about 100 m) as a default.</p></div>
+      <div class="risk"><strong>SATIE dependency</strong><p>Keep the adapter boundary and store SATIE's raw output, so audio can be re-rendered without regenerating.</p></div>
+      <div class="risk"><strong>Latency</strong><p>Expect 10–30 minutes end to end. Design for it with notifications, an early preview splat and visible stage progress.</p></div>
+    </div>
+  </section>
+
+  <section id="phases">
+    <span class="eyebrow">Build order</span>
+    <h2>Phases</h2>
+    <ol class="phases">
+      <li><div><strong>MVP</strong><p>Video upload, COLMAP, gsplat, web viewer with the original audio played non-spatially. Private memories only.</p></div></li>
+      <li><div><strong>Spatial audio</strong><p>Separation, audio-visual localization and the Web Audio viewer, with SATIE stubbed behind the adapter.</p></div></li>
+      <li><div><strong>SATIE integration</strong><p>Real soundscape generation, plus a reprocessing pipeline with versioned manifests.</p></div></li>
+      <li><div><strong>Globe and sharing</strong><p>Visibility settings, the PostGIS globe, the privacy pass, moderation and reports.</p></div></li>
+      <li><div><strong>Polish</strong><p>Panorama input, fast feed-forward previews, LOD streaming, and a mobile capture app with IMU/ARKit poses and better audio.</p></div></li>
+    </ol>
+  </section>
+</div>
