@@ -1,11 +1,21 @@
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app import db
 from app.routers import globe, memories
 
-app = FastAPI(title="MemoryScapes API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    db.init_db()  # create tables and the dev user (DATABASE_URL, default a local SQLite file)
+    yield
+
+
+app = FastAPI(title="MemoryScapes API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(","),

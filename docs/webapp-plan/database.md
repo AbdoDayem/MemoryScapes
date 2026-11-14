@@ -132,10 +132,11 @@ serves them from storage alone (`backend.md`).
 | Function | Does |
 |---|---|
 | `init_db()` | Create the engine and tables, set the pragmas, seed `usr_dev` |
-| `create_memory(owner_id, title, input_kind) -> dict` | Insert a `draft` row with a new id |
+| `create_memory(owner_id, title, description) -> dict` | Insert a `draft` row with a new id |
+| `get_user(id)`, `list_jobs(id)` | Reads |
 | `get_memory(id) -> dict \| None` | One row |
 | `list_memories(owner_id) -> list[dict]` | Newest first |
-| `update_memory(id, **fields) -> dict` | Title, description, visibility, lat/lon, location_source |
+| `update_memory(id, **fields) -> dict` | Title, description, visibility (only `private` for now), lat/lon (rounded here), location_source, captured_at |
 | `set_status(id, status, error=None)` | Status change, bumps `updated_at` |
 | `upsert_jobs(id, stages: dict)` | Copy the `stages` block of `job/status.json` into `jobs` |
 | `list_in_bbox(min_lon, min_lat, max_lon, max_lat, owner_id) -> list[dict]` | Memories with a location inside the box. Handles boxes that cross ±180° by splitting into two ranges. |
@@ -144,7 +145,7 @@ Tests use a temporary SQLite file per test (`tmp_path`).
 
 ## Seed data
 
-`services/api/scripts/seed.py` inserts `usr_dev` and about 10 memories in different cities
+`services/api/app/seed.py` (`python -m app.seed`) inserts `usr_dev` and about 10 memories in different cities
 with status `ready`, so the globe can be built before real uploads exist. Re-running it
 doesn't create duplicates.
 
