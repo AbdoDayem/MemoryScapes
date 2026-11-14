@@ -27,6 +27,7 @@ services/workers/README.md).
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 from typing import Literal
@@ -38,6 +39,7 @@ from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.stagekit import StageError, StageIO, run_stage, write_json
 
 STAGE = "poses"
+log = logging.getLogger("memoryscapes.poses")
 VERSION = "3"  # 2: audio-stage contract (cameras.json, points3d.npy); 3: points3d_rgb.npy
 
 CAPTURE_HINT = (
@@ -100,23 +102,41 @@ def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int):
         pycolmap.match_sequential(db, pairing_options=pairing, device=device)
     io.progress(0.4, "features matched")
 
-    sparse = work / "sparse"
-    sparse.mkdir()
-    if cfg.mapper == "global":
-        recs = pycolmap.global_mapping(db, image_dir, sparse)
-    else:
-        recs = pycolmap.incremental_mapping(db, image_dir, sparse)
-    rec = _largest(recs)
-    registered = rec.num_reg_images() if rec is not None else 0
-    if registered < max(10, cfg.min_registered_fraction * n_images):
+    needed = max(10, cfg.min_registered_fraction * n_images)
+
+    def mapping(kind: str):
+        sparse = work / f"sparse_{kind}"
+        sparse.mkdir()
+        try:
+            if kind == "global":
+                recs = pycolmap.global_mapping(db, image_dir, sparse)
+            else:
+                recs = pycolmap.incremental_mapping(db, image_dir, sparse)
+        except Exception as err:  # noqa: BLE001 - a failed mapper falls back below
+            log.warning("[%s] %s mapping raised: %s", STAGE, kind, err)
+            recs = {}
+        rec = _largest(recs)
+        return rec, (rec.num_reg_images() if rec is not None else 0), len(recs)
+
+    used = cfg.mapper
+    rec, registered, pieces = mapping(used)
+    if registered < needed and used == "global":
+        # Global SfM is fast but fragile on some footage (e.g. a gimbal walking straight
+        # ahead); incremental is slower and more robust. Same database, no re-extraction.
+        log.warning("[%s] global mapping placed %d/%d frames; retrying incrementally",
+                    STAGE, registered, n_images)
+        io.progress(0.45, "global mapping failed; trying incremental")
+        used = "incremental"
+        rec, registered, pieces = mapping(used)
+    if registered < needed:
         raise StageError(
             STAGE,
             f"Could not recover the camera path: only {registered} of {n_images} frames "
-            f"were placed ({len(recs)} disconnected pieces).",
+            f"were placed ({pieces} disconnected pieces).",
             CAPTURE_HINT,
         )
-    io.progress(0.7, f"registered {registered}/{n_images} frames")
-    return rec, work
+    io.progress(0.7, f"registered {registered}/{n_images} frames ({used} mapping)")
+    return rec, work, used
 
 
 def _poses(io: StageIO, cfg: PosesConfig) -> dict:
@@ -130,7 +150,7 @@ def _poses(io: StageIO, cfg: PosesConfig) -> dict:
     image_dir = ingest_dir / "frames"
     n_images = len(frame_times)
 
-    rec, work = _sfm(io, cfg, image_dir, n_images)
+    rec, work, mapper_used = _sfm(io, cfg, image_dir, n_images)
 
     # ---- gravity, metric scale, origin
     images = sorted((im for im in rec.images.values() if im.has_pose), key=lambda im: im.name)
@@ -200,7 +220,7 @@ def _poses(io: StageIO, cfg: PosesConfig) -> dict:
         "path_length_m": round(float(np.linalg.norm(np.diff([c[:3, 3] for c in c2ws], axis=0), axis=1).sum()), 2),
         "scene_extent_m": np.round(np.percentile(world_pts, 98, axis=0) - np.percentile(world_pts, 2, axis=0), 2).tolist(),
     }
-    write_json(out / "alignment.json", {**align.to_dict(), "stats": stats, "mapper": cfg.mapper})
+    write_json(out / "alignment.json", {**align.to_dict(), "stats": stats, "mapper": mapper_used})
 
     warnings = []
     if align.scale_confidence < 0.4:
