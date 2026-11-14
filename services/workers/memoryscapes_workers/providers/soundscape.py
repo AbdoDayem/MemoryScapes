@@ -151,8 +151,10 @@ class SatieConfig:
     # Upload the stems to SATIE (kept there as provided samples, and for training on the
     # Free plan). Playback doesn't need it: the runtime loads each sample from its url.
     upload_recordings: bool = False
+    # SATIE pauses a long call at its time budget (about 45 s for compose) and resumes it
+    # when the identical call is repeated; each repeat waits out the next budget itself.
     poll_attempts: int = 20
-    poll_interval_s: float = 15.0
+    poll_interval_s: float = 3.0
 
 
 def build_scene_manifest(request: SoundscapeRequest) -> dict[str, Any]:
@@ -314,6 +316,8 @@ def samples_map(request: SoundscapeRequest) -> dict[str, str]:
     return m
 
 
+_UNFINISHED = {"in_progress", "paused", "running", "queued"}
+
 _FENCE = re.compile(r"```(?:satie)?\s*\n(.*?)```", re.DOTALL)
 
 
@@ -360,9 +364,11 @@ class SatieMcpProvider:
         self.http_get_json = http_get_json
         self.sleep = sleep
         self.http_put = http_put
+        self.last_raw: dict[str, Any] = {}
 
     def generate(self, request: SoundscapeRequest) -> SoundscapeResult:
         raw: dict[str, Any] = {}
+        self.last_raw = raw  # every response so far, kept by the stage if this fails
         notes: list[str] = []
         call = self.transport.call_tool
 
@@ -374,7 +380,7 @@ class SatieMcpProvider:
         brief = build_brief(request, self.cfg)
         raw["brief"] = call("satie_brief", {"brief": brief, "contractId": contract_id})
 
-        raw["compose"] = compose = call("satie_compose", {"brief": brief, "contractId": contract_id})
+        raw["compose"] = compose = self._until_done("satie_compose", {"brief": brief, "contractId": contract_id})
         script = extract_script(compose)
 
         # One revision at most (the free plan has few compositions a month): it fixes
@@ -390,7 +396,7 @@ class SatieMcpProvider:
                 asks.append("Every recording must be used. Missing clips: " + ", ".join(sorted(missing)) + ".")
             if foreign:
                 asks.append("Use only the supplied recordings. Remove " + "; ".join(foreign) + ".")
-            raw["compose_revision"] = compose = call(
+            raw["compose_revision"] = compose = self._until_done(
                 "satie_compose", {"brief": " ".join(asks), "contractId": contract_id, "script": script}
             )
             script = extract_script(compose)
@@ -406,9 +412,11 @@ class SatieMcpProvider:
                         + "); nothing was realized or bought")
 
         raw["audit"] = audit = call("satie_audit_scene", {"script": script, "contractId": contract_id})
-        quote_id = _get(audit, "quoteId", "quote_id")
+        # Live shape (2026-11-14): {"ok": true, "quote": {"quoteId", "maxCents", "expiresAt"}, ...}
+        quote_id = _get(audit, "quoteId", "quote_id") or _get(audit.get("quote") or {}, "quoteId", "quote_id")
         if not quote_id:
-            raise SatieError("satie_audit_scene returned no quoteId (audit failed?)")
+            issues = "; ".join(map(str, audit.get("issues") or [])) or audit.get("text", "")[:300]
+            raise SatieError(f"satie_audit_scene gave no quote: {issues or 'no reason given'}")
 
         if self.cfg.upload_recordings:  # only once the script is known to be original-only
             raw["uploads"] = self._upload_recordings(request, notes)
@@ -484,17 +492,26 @@ class SatieMcpProvider:
             "world": self.cfg.world,
             "requestKey": request_key,
         }
+        result = self._until_done("satie_realize", args)
+        if result.get("status") == "input_required":
+            raise SatieBudgetExceeded(
+                f"SATIE needs more than the {self.cfg.max_cents} cent cap for this memory. Raise SATIE_MAX_CENTS to allow it."
+            )
+        return result
+
+    def _until_done(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Call `tool`, repeating the identical call while SATIE reports the run paused or
+        in progress. That resumes the same run: nothing finished is redone, and compose
+        doesn't count a new composition. Compose carries no requestKey on purpose: a
+        keyless call resumes by its arguments, so a run paused by an older worker still
+        resumes, where adding a key would start a new attempt."""
         for _ in range(self.cfg.poll_attempts):
-            result = self.transport.call_tool("satie_realize", args)
-            status = result.get("status")
-            if status == "input_required":
-                raise SatieBudgetExceeded(
-                    f"SATIE needs more than the {self.cfg.max_cents} cent cap for this memory. Raise SATIE_MAX_CENTS to allow it."
-                )
-            if status != "in_progress":
+            result = self.transport.call_tool(tool, args)
+            if result.get("status") not in _UNFINISHED:
                 return result
             self.sleep(self.cfg.poll_interval_s)
-        raise SatieError("satie_realize still in progress after polling; resume later with the same requestKey")
+        raise SatieError(f"{tool} still running after {self.cfg.poll_attempts} calls; "
+                         "re-run the stage to resume it (the identical call continues the same run)")
 
 
 def get_provider(name: str) -> SoundscapeProvider:

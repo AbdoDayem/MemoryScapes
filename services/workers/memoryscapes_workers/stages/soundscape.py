@@ -78,6 +78,9 @@ def run(
     try:
         result = provider.generate(request)
     except Exception as exc:  # noqa: BLE001 (any provider failure falls back)
+        partial = getattr(provider, "last_raw", None)
+        if partial:  # what SATIE answered before it failed, for debugging
+            write_json(ctx.storage, ctx.key("soundscape", "satie/failed_raw.json"), partial)
         if fallback is None or fallback is provider:
             raise
         error = f"{type(exc).__name__}: {exc}"

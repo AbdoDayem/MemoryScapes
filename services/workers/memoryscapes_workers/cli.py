@@ -207,6 +207,9 @@ def main(argv: list[str] | None = None) -> int:
     loaded = envfile.load()  # <repo>/.env, services/workers/.env; real env vars win
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    if not args.verbose:  # one INFO line per HTTP request (the MCP client's httpx) is noise
+        for name in ("httpx", "httpx2", "mcp"):
+            logging.getLogger(name).setLevel(logging.WARNING)
     if loaded:
         logging.debug("loaded from .env: %s", ", ".join(sorted(loaded)))  # names only
 
