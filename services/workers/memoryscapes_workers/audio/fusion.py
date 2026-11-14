@@ -20,7 +20,12 @@ class Cluster:
 
 def cluster_candidates(points: np.ndarray, weights: np.ndarray, radius_m: float = 1.5) -> list[Cluster]:
     """Greedy weighted clustering: heaviest unassigned point seeds a cluster of all
-    unassigned points within radius, refined once around the weighted centre."""
+    unassigned points within radius, refined once around the weighted centre.
+    Non-finite points and non-positive weights are ignored (they'd make NaN centres)."""
+    points, weights = np.asarray(points, float), np.asarray(weights, float)
+    if len(points):
+        keep = np.isfinite(points).all(axis=1) & np.isfinite(weights) & (weights > 0)
+        points, weights = points[keep], weights[keep]
     if len(points) == 0:
         return []
     order = np.argsort(-weights)

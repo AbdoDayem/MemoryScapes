@@ -32,6 +32,13 @@ def get_tagger() -> Tagger:
     raise ValueError(f"Unknown AUDIO_TAGGER: {name}")
 
 
+def _default_audiosep_dir() -> str | None:
+    """Where `memoryscapes-worker setup-models` installs AudioSep, if it's there."""
+    from memoryscapes_workers.devtools.models import DEFAULT_AUDIOSEP_DIR
+
+    return str(DEFAULT_AUDIOSEP_DIR) if (DEFAULT_AUDIOSEP_DIR / "pipeline.py").exists() else None
+
+
 def get_separator() -> Separator:
     name = os.environ.get("SEPARATOR", "audiosep")
     if name != "audiosep":
@@ -39,7 +46,7 @@ def get_separator() -> Separator:
     default = AudioSepSeparator(
         config_yaml=os.environ.get("AUDIOSEP_CONFIG", "config/audiosep_base.yaml"),
         checkpoint_path=os.environ.get("AUDIOSEP_CHECKPOINT", "checkpoint/audiosep_base_4M_steps.ckpt"),
-        repo_dir=os.environ.get("AUDIOSEP_DIR"),
+        repo_dir=os.environ.get("AUDIOSEP_DIR") or _default_audiosep_dir(),
     )
     speech = os.environ.get("SEPARATOR_SPEECH", "demucs")
     by_kind = {"speech": DemucsVocalsSeparator()} if speech == "demucs" else {}

@@ -121,3 +121,22 @@ def test_localize_stage_mono_recording_uses_av_only(ctx):
     bird = next(s for s in result["sources"] if s["id"] == "s1_birdsong")
     assert bird["method"] == "av"
     assert np.linalg.norm(np.array(bird["position"]) - SOURCE) < 0.5
+
+
+def test_lift_box_on_sparse_far_points_is_finite():
+    """Few points spread over a large depth range (a real outdoor walk): the depth band
+    must still hold a point, not average an empty set into NaN."""
+    cam = look_camera([0, 1.5, 0], 0, 0.0, "f0")
+    # Seven points straight ahead at very different depths.
+    # Two near, three far: the interpolated 35th-percentile depth (~41 m) has no point
+    # within 20% of it. Yaw 0 looks along +Z.
+    pts = np.array([[0.0, 1.5, d] for d in (2.0, 2.1, 100.0, 101.0, 102.0)])
+    u, v = 320.0, 240.0
+    p = lift_box((u - 40, v - 40, u + 40, v + 40), cam, pts, min_points=5)
+    assert p is not None and np.isfinite(p).all()
+
+
+def test_clustering_ignores_nan_points_and_zero_weights():
+    pts = np.array([[0.0, 0.0, 0.0], [np.nan, 0.0, 0.0], [0.2, 0.0, 0.0], [5.0, 0.0, 0.0]])
+    clusters = cluster_candidates(pts, np.array([1.0, 1.0, 1.0, 0.0]))
+    assert len(clusters) == 1 and np.isfinite(clusters[0].centre).all() and clusters[0].count == 2

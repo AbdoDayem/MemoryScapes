@@ -9,11 +9,16 @@ Outputs:
 
 If SATIE fails and SOUNDSCAPE_FALLBACK=stub (the default), the memory still gets the
 object-based soundscape, and scene.json records why SATIE was skipped.
+
+SATIE's runtime loads each stem from the URL it's given, in the viewer's browser. Set
+PUBLIC_API_URL (the API's address as viewers reach it) so those URLs point at the API's
+`/memories/<id>/files/...`; otherwise they're storage URLs (file:// for local storage).
 """
 
 from __future__ import annotations
 
 import os
+from urllib.parse import quote
 
 from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.models import LocalizedSource, StemsIndex
@@ -28,6 +33,14 @@ from memoryscapes_workers.providers.soundscape import (
 from memoryscapes_workers.storage import read_json, write_json
 
 
+def stem_url(ctx: StageContext, key: str) -> str:
+    """Where a viewer's browser can fetch a stored file."""
+    base, prefix = os.environ.get("PUBLIC_API_URL", "").rstrip("/"), f"{ctx.memory_id}/"
+    if base and key.startswith(prefix):
+        return f"{base}/memories/{quote(ctx.memory_id)}/files/{quote(key[len(prefix):])}"
+    return ctx.storage.url_for(key)
+
+
 def build_request(ctx: StageContext, mood_prompt: str | None = None) -> SoundscapeRequest:
     storage = ctx.storage
     localized = read_json(storage, ctx.key("localize", "sources.json"))
@@ -35,13 +48,14 @@ def build_request(ctx: StageContext, mood_prompt: str | None = None) -> Soundsca
     sources = [LocalizedSource.from_json(s) for s in localized["sources"]]
     return SoundscapeRequest(
         memory_id=ctx.memory_id,
-        sources=[SoundscapeSource(s, storage.url_for(s.stem_key)) for s in sources],
+        sources=[SoundscapeSource(s, stem_url(ctx, s.stem_key)) for s in sources],
         ambient_key=index.ambient_key,
-        ambient_url=storage.url_for(index.ambient_key),
+        ambient_url=stem_url(ctx, index.ambient_key),
         ambient_channels=index.channels,
         bounds_min=localized["bounds"]["min"],
         bounds_max=localized["bounds"]["max"],
         mood_prompt=mood_prompt,
+        read_bytes=storage.read_bytes,
     )
 
 

@@ -5,6 +5,7 @@
     memoryscapes-worker run mem_1 --until splat --set splat.trainer=points
     memoryscapes-worker run mem_1 --stages poses --set poses.mapper=incremental --force
     memoryscapes-worker synth data/synthetic
+    memoryscapes-worker satie-login [--paste | --status]  # once per server, its own SATIE account
 
 Storage defaults to a local directory (STORAGE_ROOT, default data/storage); set
 STORAGE_BACKEND=s3 for MinIO/S3. trainer=gsplat needs a CUDA GPU; trainer=points runs anywhere.
@@ -131,6 +132,33 @@ def _run_for_parent(args, storage: Storage, config: dict) -> int:
     return code
 
 
+def _satie_login(args: argparse.Namespace) -> int:
+    import os
+
+    from memoryscapes_workers.providers import satie_auth
+
+    url = os.environ.get("SATIE_MCP_URL", satie_auth.DEFAULT_MCP_URL)
+    if not args.status:
+        if os.environ.get("SATIE_MCP_TOKEN"):
+            print("note: SATIE_MCP_TOKEN is set, and it wins over the saved login; unset it to use this one")
+        path = satie_auth.login(url, paste=args.paste, open_browser=not args.no_browser)
+        print(f"signed in; saved to {path} (git-ignored; keep it private)")
+    info = satie_auth.status()
+    if info["signed_in"]:  # check it with SATIE's free status call
+        from memoryscapes_workers.providers.mcp_transport import HttpMcpTransport
+
+        try:
+            st = HttpMcpTransport(url, satie_auth.bearer_from_env(), timeout_s=60).call_tool("satie_status", {})
+            billing = st.get("billing") or {}
+            info["satie"] = {"plan": (st.get("plan") or {}).get("label"),
+                             "balance_cents": st.get("balanceCents", billing.get("balanceCents")),
+                             "allowance": billing.get("allowance")}
+        except Exception as exc:  # noqa: BLE001
+            info["satie"] = f"check failed: {exc}"
+    print(json.dumps(info, indent=2))
+    return 0 if info["signed_in"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="memoryscapes-worker", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -155,6 +183,15 @@ def main(argv: list[str] | None = None) -> int:
                        help="run all stages in this process (debugging; see the OpenMP note)")
     p_run.add_argument("--result-file", type=Path, help=argparse.SUPPRESS)  # for run_isolated
 
+    p_models = sub.add_parser("setup-models", help="install the audio stages' models (~5.6 GB)")
+    p_models.add_argument("--check", action="store_true", help="also load and run each model once")
+
+    p_login = sub.add_parser("satie-login", help="sign this machine in to SATIE once (saves a refresh token)")
+    p_login.add_argument("--paste", action="store_true",
+                         help="the browser is on another machine: paste the address it lands on")
+    p_login.add_argument("--status", action="store_true", help="show the saved sign-in and check it with SATIE")
+    p_login.add_argument("--no-browser", action="store_true", help="print the sign-in address only")
+
     p_syn = sub.add_parser("synth", help="render the synthetic test video")
     p_syn.add_argument("out_dir", type=Path)
     p_syn.add_argument("--seconds", type=float, default=10.0)
@@ -165,8 +202,22 @@ def main(argv: list[str] | None = None) -> int:
     p_demo.add_argument("--trainer", default="points")
 
     args = ap.parse_args(argv)
+    from memoryscapes_workers import envfile
+
+    loaded = envfile.load()  # <repo>/.env, services/workers/.env; real env vars win
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    if loaded:
+        logging.debug("loaded from .env: %s", ", ".join(sorted(loaded)))  # names only
+
+    if args.cmd == "setup-models":
+        from memoryscapes_workers.devtools.models import setup
+
+        print(json.dumps(setup(check=args.check), indent=2))
+        return 0
+
+    if args.cmd == "satie-login":
+        return _satie_login(args)
 
     if args.cmd == "synth":
         from memoryscapes_workers.devtools.synthetic import SyntheticSpec, generate

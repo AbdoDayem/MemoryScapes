@@ -53,6 +53,38 @@ tried on real footage. The splat stage writes the files in `docs/SPLAT_OUTPUTS.m
 changed (`--force` re-runs them). `splat.trainer=auto` (the default) uses gsplat on an NVIDIA
 GPU, otherwise the PyTorch rasterizer on Apple Silicon, otherwise `points`.
 
+## Windows + NVIDIA: a complete memory with spatial sound
+
+This is the deploy path. From `services/workers`, in PowerShell:
+
+1. Install Python 3.12, an NVIDIA driver, and ffmpeg on `PATH` (for example `winget install Gyan.FFmpeg`).
+2. Install CUDA torch **first**: PyPI's torch wheels for Windows are CPU-only. Pick the CUDA build for your driver at https://pytorch.org/get-started/locally/, for example:
+   `python -m venv .venv; .venv\Scripts\pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126`
+3. `.venv\Scripts\pip install -e ".[dev,visual,audio]"`. The torch from step 2 is kept.
+4. Get gsplat's CUDA kernels: a prebuilt wheel matching your torch and CUDA (see https://docs.gsplat.studio). Without one, gsplat compiles on first use, which needs the CUDA toolkit and Visual Studio Build Tools.
+5. `.venv\Scripts\memoryscapes-worker setup-models --check`. This takes about 5.6 GB once.
+6. Build a memory:
+   ```
+   .venv\Scripts\memoryscapes-worker import mem_1 C:\path\to\clip.mp4
+   .venv\Scripts\memoryscapes-worker run mem_1 --until publish
+   ```
+   That runs ingest → poses → splat (`trainer=auto` picks gsplat on CUDA) → separate → localize → soundscape → publish.
+7. Serve and view it: `cd ..\api; uvicorn app.main:app --port 8000`, then `npm run dev:web` from the repo root. Open http://localhost:3000/memories/mem_1 and press **Start sound**. Placed sources pan and get louder as you walk.
+
+Settings go in `<repo>\.env`, which is git-ignored and loaded by the CLI; real environment variables win. For example `SOUNDSCAPE_PROVIDER=satie`, `STORAGE_ROOT=D:\memoryscapes`. Keep `SATIE_MAX_CENTS=0` and `SATIE_ALLOW_GENERATION=false` unless the team agrees otherwise: SATIE should only arrange the recorded sounds.
+
+To use SATIE on the server:
+1. `.venv\Scripts\pip install -e ".[satie]"`.
+2. Sign the server in once with its own SATIE account: `.venv\Scripts\memoryscapes-worker satie-login`. A browser opens on satie.world; after you sign in, it returns to `localhost` and the worker saves a refresh token to `<repo>\.satie\worker-token.json`. That file is git-ignored; keep it private, and set `SATIE_TOKEN_FILE` to store it elsewhere. Over SSH, or with the browser on another machine, use `satie-login --paste` and paste the `localhost` address the browser lands on.
+3. Check it with `memoryscapes-worker satie-login --status`. It shows the plan and balance, never the token.
+4. Set `SOUNDSCAPE_PROVIDER=satie`. The worker then refreshes its access token by itself. If the login is revoked, the stage falls back to the stub and `soundscape/scene.json` says to run `satie-login` again. A `SATIE_MCP_TOKEN` in the environment overrides the saved login.
+5. The viewer's SATIE runtime loads each stem from the URL the worker gave SATIE. Set `PUBLIC_API_URL` to the API's address as viewers reach it (for example `https://memories.example.org`, not `localhost`), and the stems are linked as `<PUBLIC_API_URL>/memories/<id>/files/...`.
+
+Capture tips that matter most:
+- One continuous take. Edited videos are split into shots, and only the shots that join up are kept.
+- Walk slowly; don't stand still or only turn in place.
+- Don't film mostly sky or open water.
+
 ## Example memories
 
 `examples/` has five procedural memories with known ground truth. Each one has synthesized sounds (birdsong, fountain, traffic, speech, music, a dog, bells, waves, wind), a camera path, a point cloud, and imperfect stand-in models: separation leakage, tag noise, and missed or false detections.
@@ -93,13 +125,17 @@ hard_mode's splat is scaled by 0.5 afterwards for the debugger's alignment check
 
 ## Models
 
-Each runs on the CPU, so there's no GPU needed. Weights download on first use, except AudioSep's.
+`memoryscapes-worker setup-models` installs them all (~5.6 GB), the same on Windows, macOS
+and Linux. Add `--check` to load each one and run it once. Each runs on the CPU, so no GPU
+is needed. CUDA is used when present.
 
-| Model | Install |
-|---|---|
-| CLAP, Grounding DINO | `transformers` (Hugging Face cache) |
-| HTDemucs | `demucs` |
-| AudioSep | Not on PyPI. Clone [Audio-AGI/AudioSep](https://github.com/Audio-AGI/AudioSep) to `<repo>/.models/AudioSep`, and put `audiosep_base_4M_steps.ckpt` and `music_speech_audioset_epoch_15_esc_89.98.pt` from the [AudioSep Space](https://huggingface.co/spaces/Audio-AGI/AudioSep/tree/main/checkpoint) in its `checkpoint/` folder (3.6 GB). Set `AUDIOSEP_DIR` if it lives elsewhere. |
+| Model | Used for | Where it goes |
+|---|---|---|
+| CLAP `laion/clap-htsat-unfused` | tagging which sounds are present | Hugging Face cache |
+| AudioSep, pinned commit, plus 2 checkpoints (3.6 GB, SHA-256 checked) | separating each tagged sound | `<repo>/.models/AudioSep` (git-ignored; `AUDIOSEP_DIR` overrides) |
+| RoBERTa `roberta-base` | AudioSep's text encoder | Hugging Face cache |
+| HTDemucs | separating speech | torch / Hugging Face cache |
+| Grounding DINO tiny | finding a sound's source in the frames (localization) | Hugging Face cache |
 
 Two compatibility shims in `audio/separation.py` let AudioSep run on current torch and transformers without editing its code. One allowlists the NumPy types its checkpoints pickle, so they load under `weights_only=True` instead of turning that safety off. The other drops a stale `position_ids` key from its CLAP checkpoint.
 
@@ -132,12 +168,25 @@ Writes `localize/sources.json` with position, spread, confidence, method, and a 
 - Spending is capped by `SATIE_MAX_CENTS`, default 0. Retries reuse the same `requestKey`, so a re-run resumes the purchase instead of buying again.
 - If SATIE fails, the stage falls back to the stub and records why in `soundscape/scene.json`.
 
-### Unverified against the live SATIE server
+### SATIE against the live server (checked 2026-11-14)
 
-These are isolated in `providers/soundscape.py` and `providers/mcp_transport.py`:
-- The scene manifest shape. The server publishes the real one as the resource `satie://schema/scene`.
-- Whether `satie_realize` `samples` accepts our own stem URLs, and whether SATIE's 30 s audio limit applies to them.
-- How a headless worker authenticates. The MCP uses OAuth sign-in, and the code currently sends `SATIE_MCP_TOKEN` as a bearer token.
-- The exact response fields of each tool. They're parsed defensively.
+A real memory (the Canada Water walk) went through the provider's steps on the live MCP:
+`satie_inspect_scene` → `satie_brief` → `satie_compose` → `satie_check` → `satie_audit_scene` → `satie_realize`. The result was 8 of 8 sounds from our own files (`source: "provided"`), 0 generated, 0 from the library, and 0¢ spent.
+
+- **Verified:**
+  - The scene manifest is `satie.scene/v1`: `objects` hosted `at` our source ids, and our recordings as scene `samples`.
+  - Scripts play a clip as `loop <clip>` with `at <host>` as an indented property.
+  - `satie_realize` accepts our stem URLs as `samples`, free.
+  - The fields the guards read: `clipsToSupply`, `libraryClips`, `takes` and per-voice `generated` from check and audit, plus `generated`, `fromLibrary`, `maxSpentCents` and per-sample `source` from realize.
+- **Original sound only** (`SATIE_ALLOW_GENERATION=false`, the default):
+  - The brief answers SATIE's open questions up front: no events, no weather or time beds, and no crowd bed. SATIE's defaults would otherwise add a library crowd bed.
+  - Before realize, the script must buy 0 takes, use no library clips, and play only our clips. One revision is allowed; then nothing is realized and the stage uses the stub.
+  - Realize always runs with `maxCents: 0` and `preferLibrary: false`, even if `SATIE_MAX_CENTS` is raised. After realize, anything not `provided` is rejected.
+- **`saveSoundscapes` defaults to `off`.** SATIE's own default is a public gallery entry; `SATIE_SAVE_SOUNDSCAPES` changes it.
+- **Training:** on the Free plan, SATIE keeps the scene and any audio it can fetch for training, and Free can't opt out. Paid plans can, with `satie_training`. Decide this before passing real users' recordings.
+- **Sign-in:** SATIE's MCP server is an OAuth 2.1 resource. Its metadata names Supabase Auth, which supports dynamic client registration, PKCE (S256), `refresh_token` and `offline_access`. `satie-login` uses exactly that: a public client with no secret, then refresh tokens. Without a token the server answers 401 `invalid_token`, and the worker reports that as "not signed in". Tested with fake endpoints; the first real sign-in happens on the server.
+- **Samples load from our URLs.** Every scene sample needs a `url`, and the runtime fetches the sound from it. An upload doesn't replace that.
+- **Uploading the stems** (`SATIE_UPLOAD_STEMS=true`, off by default). After the original-only checks pass, each recording is uploaded through `satie_asset` (begin → PUT → finalize) under its `samples.json` key (`Audio/memory/<id>`). SATIE keeps it as a provided sample. Uploads are capped at 16 MB, so longer stems go up as MP3; this was tested live with a 46 s stem. A failed upload only adds a note.
+- **Listening needs a paid plan.** `satie_listen` (its review of a ≤30 s, 16-bit WAV) answers "needs the Vibecoder plan" on Free, so the worker doesn't call it.
 
 The model adapters (`ClapTagger`, `AudioSepSeparator`, `DemucsVocalsSeparator`, `GroundingDinoDetector`) follow those libraries' documented APIs but haven't been run here. The tests use fakes and synthetic scenes with known ground truth.
