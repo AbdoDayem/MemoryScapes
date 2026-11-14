@@ -11,12 +11,13 @@
   },
   "dependencies": {
     "@memoryscapes/manifest": "*",
+    "@sparkjsdev/spark": "2.4.0",
+    "globe.gl": "^2.46.2",
     "next": "^15.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "three": "^0.186.1",
-    "globe.gl": "^2.46.2",
-    "@sparkjsdev/spark": "2.4.0"
+    "satie-runtime": "https://www.satie.world/runtime/0.4.8/satie-runtime.tgz",
+    "three": "^0.186.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

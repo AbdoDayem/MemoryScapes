@@ -71,8 +71,8 @@ class FakeSatie:
             return {"text": f"Here you go:\n```satie\n{self.compose_scripts.pop(0)}\n```"}
         if name == "satie_check":
             return self.checks.pop(0) if len(self.checks) > 1 else self.checks[0]
-        if name == "satie_audit_scene":
-            return {"quoteId": "q_1"}
+        if name == "satie_audit_scene":  # live shape, 2026-11-14
+            return {"ok": True, "issues": [], "quote": {"quoteId": "q_1", "maxCents": 0, "expiresAt": "2026-11-14T23:26:59Z"}}
         if name == "satie_realize":
             return self.realize.pop(0)
         if name == "satie_asset" and args["action"] == "begin":  # shapes seen live, 2026-11-14
@@ -327,3 +327,46 @@ def test_satie_gets_stem_urls_the_viewer_can_fetch(ctx, monkeypatch):
     request = soundscape.build_request(ctx)
     assert request.sources[0].url == "https://memories.example.org/memories/mem_test/files/separate/stems/s1_birdsong.wav"
     assert request.ambient_url == "https://memories.example.org/memories/mem_test/files/separate/ambient.wav"
+
+
+def test_a_paused_compose_is_resumed_with_the_identical_call(ctx):
+    _write_inputs(ctx)
+    fake = FakeSatie()
+    plain = fake.call_tool
+    paused = {"n": 0}
+
+    def call_tool(name, args):  # SATIE pauses compose at its time budget (seen live, 2026-11-14)
+        if name == "satie_compose" and paused["n"] < 2:
+            paused["n"] += 1
+            fake.calls.append((name, args))
+            return {"status": "paused", "runId": "5f698842-55b0-4c76-ad73-e69a5ed3cdaf",
+                    "phase": "Composing the draft. Resume by repeating the identical call."}
+        return plain(name, args)
+
+    fake.call_tool = call_tool
+    scene = soundscape.run(ctx, provider=_satie(fake), fallback=None)
+    composes = [a for n, a in fake.calls if n == "satie_compose"]
+    assert len(composes) == 3 and composes[0] == composes[1] == composes[2]  # identical: resumes
+    assert "requestKey" not in composes[0]
+    assert scene["satie"] is not None
+
+
+def test_a_compose_that_never_finishes_says_how_to_resume(ctx):
+    _write_inputs(ctx)
+    fake = FakeSatie()
+    plain = fake.call_tool
+    fake.call_tool = lambda name, args: ({"status": "in_progress"} if name == "satie_compose" else plain(name, args))
+    scene = soundscape.run(ctx, provider=_satie(fake, poll_attempts=3))
+    assert scene["satie"] is None and "re-run the stage to resume" in scene["provider"]["fallback_reason"]
+
+
+def test_a_failed_satie_run_keeps_what_satie_answered(ctx):
+    _write_inputs(ctx)
+    fake = FakeSatie()
+    plain = fake.call_tool
+    fake.call_tool = lambda name, args: ({"ok": False, "issues": ["host s1_birdsong is not bound"]}
+                                         if name == "satie_audit_scene" else plain(name, args))
+    scene = soundscape.run(ctx, provider=_satie(fake))
+    assert "host s1_birdsong is not bound" in scene["provider"]["fallback_reason"]
+    kept = read_json(ctx.storage, ctx.key("soundscape", "satie/failed_raw.json"))
+    assert set(kept) >= {"inspect", "compose", "check", "audit"}

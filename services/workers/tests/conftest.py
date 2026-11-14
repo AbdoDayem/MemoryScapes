@@ -13,6 +13,13 @@ from memoryscapes_workers.context import StageContext  # noqa: E402
 from memoryscapes_workers.storage import LocalStorage  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _offline_soundscape(monkeypatch):
+    """The pipeline defaults to SATIE; tests never reach the network."""
+    monkeypatch.setenv("SOUNDSCAPE_PROVIDER", "stub")
+    monkeypatch.delenv("SATIE_MCP_TOKEN", raising=False)
+
+
 @pytest.fixture
 def storage(tmp_path) -> LocalStorage:
     return LocalStorage(tmp_path / "storage")
