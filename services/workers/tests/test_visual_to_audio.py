@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from scipy import signal
 
-from markers import needs_cv2, needs_ffmpeg, needs_pycolmap
+from markers import has_module, needs_cv2, needs_ffmpeg, needs_pycolmap
 from memoryscapes_workers.audio.tagging import TagResult
 from memoryscapes_workers.models import Camera, MicInfo, StemsIndex
 from memoryscapes_workers.providers.soundscape import StubProvider
@@ -96,7 +96,10 @@ def test_audio_stages_run_on_real_ingest_and_poses(ctx, walk_video):
     # share a process with torch on macOS, and other tests in this session load torch.
     env = {**os.environ, "STORAGE_BACKEND": "local", "STORAGE_ROOT": str(ctx.storage.root)}
     cli = [sys.executable, "-m", "memoryscapes_workers"]
-    for args in (["import", ctx.memory_id, str(walk_video)], ["run", ctx.memory_id, "--until", "poses"]):
+    trainer = ["--set", "splat.trainer=torch", "--set", "splat.train.steps=20",
+               "--set", "splat.train.render_max_side=120"] if has_module("torch") else []
+    for args in (["import", ctx.memory_id, str(walk_video)],
+                 ["run", ctx.memory_id, "--until", "splat", *trainer]):
         res = subprocess.run([*cli, *args], env=env, capture_output=True, text=True, check=False)
         assert res.returncode == 0, res.stderr[-3000:]
     s = ctx.storage
@@ -133,3 +136,36 @@ def test_audio_stages_run_on_real_ingest_and_poses(ctx, walk_video):
     soundscape.run(ctx, provider=StubProvider())
     scene = read_json(s, ctx.key("soundscape", "scene.json"))
     assert scene
+
+    # ---- splat outputs (docs/SPLAT_OUTPUTS.md), checked the way tools/debugger does
+    check_splat_outputs(ctx, cameras, points, rendered=has_module("torch"))
+
+
+def check_splat_outputs(ctx, cameras, points, rendered):
+    from scipy.spatial import cKDTree
+
+    from memoryscapes_workers.visual.splat_io import read_ply
+
+    s = ctx.storage
+    meta = read_json(s, ctx.key("splat", "meta.json"))
+    assert (meta["units"], meta["up"]) == ("meters", "+y")
+    assert {"trainer", "trainer_version", "iterations", "sh_degree", "eval_frames"} <= set(meta)
+    ids = {c.frame_id for c in cameras}
+    assert set(meta["eval_frames"]) <= ids
+    metrics = read_json(s, ctx.key("splat", "metrics.json"))
+    assert len({len(v) for v in metrics.values()}) == 1
+    assert s.exists(ctx.key("splat", "lods/lod0.spz"))
+    colors = read_npy(s, ctx.key("poses", "points3d_rgb.npy"))
+    assert colors.dtype == np.uint8 and colors.shape == points.shape
+
+    # Alignment: the splat must sit on the poses' point cloud (same metric frame).
+    s.download(ctx.key("splat", "point_cloud.ply"), ctx.work_root / "check" / "pc.ply")
+    means = read_ply(ctx.work_root / "check" / "pc.ply").means
+    gap = np.median(cKDTree(points).query(means)[0])
+    extent = np.linalg.norm(np.percentile(points, 98, 0) - np.percentile(points, 2, 0))
+    assert gap < max(0.3, 0.03 * extent), gap
+    scale = np.std(means, axis=0).mean() / np.std(points, axis=0).mean()
+    assert abs(scale - 1) < 0.1, scale
+    if rendered:
+        assert meta["eval_frames"] and len(metrics["iteration"]) >= 2
+        assert {f"{ctx.memory_id}/splat/renders/{i}.png" for i in ids} <= set(s.list(ctx.prefix("splat")))
