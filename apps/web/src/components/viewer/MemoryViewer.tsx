@@ -23,8 +23,9 @@ import { SpatialAudioEngine } from "@/components/audio/SpatialAudioEngine";
 import { getMemory, type MemoryResponse } from "@/lib/api";
 
 import { asWalkable, clampToWalkable, samplePath, type CapturePath } from "./navigation";
+import { failureSummary, pollAction, stageRows } from "./status";
 
-type Phase = "loading" | "processing" | "ready" | "error";
+type Phase = "loading" | "processing" | "ready" | "failed" | "error";
 type AudioState = "none" | "loading" | "ready" | "playing" | "error";
 
 const WALK_SPEED = 1.4; // m/s
@@ -48,21 +49,32 @@ export default function MemoryViewer({ memoryId }: { memoryId: string }) {
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let failures = 0;
+    let seenOnce = false;
     const poll = async () => {
       try {
         const m = await getMemory(memoryId);
         if (cancelled) return;
+        failures = 0;
         setMemory(m);
-        if (m.status === "ready" && m.manifest) setPhase("ready");
+        const action = pollAction(m);
+        if (action === "show") setPhase("ready");
+        else if (action === "stop") setPhase("failed"); // a failed run: polling would never end
         else {
           setPhase("processing");
           timer = setTimeout(poll, 5000);
         }
       } catch (err) {
-        if (!cancelled) {
-          setError(String(err));
-          setPhase("error");
+        if (cancelled) return;
+        // A blip (the API restarting) shouldn't end a long wait; give up after a few.
+        if (++failures < 4 && seenOnce) {
+          timer = setTimeout(poll, 5000 * failures);
+          return;
         }
+        setError(String(err));
+        setPhase("error");
+      } finally {
+        seenOnce = true;
       }
     };
     poll();
@@ -131,7 +143,13 @@ export default function MemoryViewer({ memoryId }: { memoryId: string }) {
         <div style={{ background: "rgba(0,0,0,.55)", padding: "10px 14px", borderRadius: 8, maxWidth: 420, pointerEvents: "auto" }}>
           <div style={{ fontWeight: 600 }}>{manifest?.meta.title ?? memoryId}</div>
           {phase === "loading" && <div>Loading…</div>}
-          {phase === "processing" && <StageList stages={memory?.stages} />}
+          {phase === "processing" && memory && <StageList memory={memory} />}
+          {phase === "failed" && memory && (
+            <>
+              <div style={{ color: "#f88", marginTop: 4 }}>{failureSummary(memory)}</div>
+              <StageList memory={memory} />
+            </>
+          )}
           {phase === "error" && <div style={{ color: "#f88" }}>{error}</div>}
           {phase === "ready" && (
             <>
@@ -152,18 +170,25 @@ export default function MemoryViewer({ memoryId }: { memoryId: string }) {
   );
 }
 
-function StageList({ stages }: { stages?: Record<string, boolean> }) {
-  if (!stages) return <div>Processing…</div>;
+const STAGE_ICON = { pending: "·", running: "…", done: "✓", failed: "✗", skipped: "–", blocked: "–" };
+
+function StageList({ memory }: { memory: MemoryResponse }) {
+  const rows = stageRows(memory);
+  if (rows.length === 0) return <div>Processing…</div>;
   return (
     <div>
-      Processing:
-      <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
-        {Object.entries(stages).map(([name, done]) => (
-          <li key={name} style={{ opacity: done ? 1 : 0.5 }}>
-            {done ? "✓" : "…"} {name}
+      {memory.status !== "failed" && "Processing:"}
+      <ul style={{ margin: "4px 0 0", paddingLeft: 18, listStyle: "none" }}>
+        {rows.map((r) => (
+          <li key={r.name} style={{ opacity: r.status === "done" || r.status === "failed" ? 1 : 0.55 }}>
+            {STAGE_ICON[r.status]} {r.name}
+            {r.seconds !== undefined && <span style={{ opacity: 0.6 }}> · {r.seconds.toFixed(0)} s</span>}
           </li>
         ))}
       </ul>
+      {memory.stage_detail?.detail && memory.status !== "failed" && (
+        <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>{memory.stage_detail.detail}</div>
+      )}
     </div>
   );
 }
