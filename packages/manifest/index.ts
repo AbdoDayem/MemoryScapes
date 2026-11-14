@@ -27,6 +27,10 @@ export interface SatieSoundscape {
   host_map: Record<string, string>;
 }
 
+/**
+ * Relative URLs (e.g. "splat/lods/lod0.spz") are relative to the memory's asset base,
+ * which the API returns next to the manifest.
+ */
 export interface MemoryManifest {
   id: string;
   version: number;
@@ -42,6 +46,10 @@ export interface MemoryManifest {
     spawn?: Record<string, unknown>;
     walkable_bounds?: Record<string, unknown>;
     original_path?: string;
+    /** ground height in the world frame */
+    floor_y?: number;
+    /** camera height above the ground during capture */
+    eye_height_m?: number;
   };
   audio: {
     ambient_bed?: { url: string; format: "mono" | "stereo" | "ambisonic_foa" | "ambisonic_hoa" };

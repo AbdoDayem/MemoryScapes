@@ -78,7 +78,7 @@ Each run writes the full stage output, so you can listen to `ingest/audio.wav` a
 python -m memoryscapes_workers.run --root <data root> --memory <id> [--max-seconds 30] [--no-detector] [--only ingest,poses]
 ```
 
-This is the debugger's upload runner: the whole DAG for one memory, with progress the UI can show. It expects the uploaded files in `<root>/<id>/upload/` (the debugger's upload page puts them there, alongside a `meta.json` the stages ignore). Each stage runs in its own process through `memoryscapes-worker run --in-process --result-file`, for the OpenMP reason in `cli.py`, and with `--force`, because a re-upload replaces files under the same names. Stages run in DAG order. Unimplemented stages (publish) are marked skipped, and stages whose dependencies failed are marked blocked, while the others carry on. Progress goes to `<id>/job/status.json`, and the full log to `<id>/job/log.txt`.
+This is the debugger's upload runner: the whole DAG for one memory, with progress the UI can show. It expects the uploaded files in `<root>/<id>/upload/` (the debugger's upload page puts them there, alongside a `meta.json` the stages ignore). Each stage runs in its own process through `memoryscapes-worker run --in-process --result-file`, for the OpenMP reason in `cli.py`, and with `--force`, because a re-upload replaces files under the same names. Stages run in DAG order. Unimplemented stages are marked skipped, and stages whose dependencies failed are marked blocked, while the others carry on. Progress goes to `<id>/job/status.json`, and the full log to `<id>/job/log.txt`.
 
 The CPU defaults are set in `run.stage_config`: at most `--max-keyframes 120` keyframes and SIFT on the CPU. The splat trainer is `auto`, so on a machine without CUDA it uses `points`.
 

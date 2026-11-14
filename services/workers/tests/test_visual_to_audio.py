@@ -23,7 +23,7 @@ from markers import has_module, needs_cv2, needs_ffmpeg, needs_pycolmap
 from memoryscapes_workers.audio.tagging import TagResult
 from memoryscapes_workers.models import Camera, MicInfo, StemsIndex
 from memoryscapes_workers.providers.soundscape import StubProvider
-from memoryscapes_workers.stages import localize, separate, soundscape
+from memoryscapes_workers.stages import localize, publish, separate, soundscape
 from memoryscapes_workers.storage import read_json, read_npy
 from memoryscapes_workers.vision.grounding import Detection
 
@@ -139,6 +139,14 @@ def test_audio_stages_run_on_real_ingest_and_poses(ctx, walk_video):
 
     # ---- splat outputs (docs/SPLAT_OUTPUTS.md), checked the way tools/debugger does
     check_splat_outputs(ctx, cameras, points, rendered=has_module("torch"))
+
+    # ---- manifest: validated against the schema; every URL resolves to a stored file
+    publish.run(ctx)
+    m = read_json(s, ctx.key("publish", "manifest.json"))
+    assert m["audio"]["sources"][0]["label"] == "birdsong" and m["audio"]["sources"][0]["position"]
+    urls = [lod["url"] for lod in m["splat"]["lods"]] + [x["url"] for x in m["audio"]["sources"]]
+    urls += [m["audio"]["ambient_bed"]["url"], m["navigation"]["original_path"]]
+    assert all(s.exists(f"{ctx.memory_id}/{u}") for u in urls), urls
 
 
 def check_splat_outputs(ctx, cameras, points, rendered):
