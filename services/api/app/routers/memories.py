@@ -292,9 +292,32 @@ def stream_progress(memory_id: str):
 
 
 @router.patch("/{memory_id}")
-def update_memory(memory_id: str, body: UpdateMemoryRequest) -> dict:
-    """Update title, description, visibility and location."""
-    raise HTTPException(501, "Not implemented")
+def update_memory(memory_id: str, body: UpdateMemoryRequest, request: Request) -> dict:
+    """Update title, description, visibility and location. Only the fields sent change;
+    ``"lat": null, "lon": null`` clears the location. Locations are rounded to about 100 m
+    before saving (``db.update_memory``), and only ``private`` is allowed for now.
+    Returns the memory in the same shape as ``GET /memories/{id}``."""
+    _check_id(memory_id)
+    _require_memory(memory_id)
+    sent = body.model_fields_set
+    fields = {k: getattr(body, k) for k in sent}
+    if ("lat" in sent) != ("lon" in sent):
+        raise HTTPException(422, "Send lat and lon together.")
+    if "visibility" in fields and fields["visibility"] is not None:
+        fields["visibility"] = fields["visibility"].value
+    elif "visibility" in fields:
+        raise HTTPException(422, "visibility can't be null.")
+    if fields.get("lat") is not None and fields.get("location_source") is None:
+        fields["location_source"] = "user_pin"
+    elif "location_source" in fields and fields.get("lat") is None and "lat" not in sent:
+        raise HTTPException(422, "location_source goes with lat and lon.")
+    try:
+        updated = db.update_memory(memory_id, **fields) if fields else db.get_memory(memory_id)
+    except ValueError as err:
+        raise HTTPException(422, str(err)) from None
+    if updated is None:
+        raise HTTPException(404, f"No memory {memory_id!r}")
+    return get_memory(memory_id, request)
 
 
 @router.post("/{memory_id}/report")

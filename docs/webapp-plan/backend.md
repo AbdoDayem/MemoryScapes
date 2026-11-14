@@ -17,7 +17,7 @@ Added with the viewer (PR #5, Marko). **Keep these working**: the viewer depends
   - `GET /memories/{id}/files/{key}`: serves one stage output (a local file with range
     support, or a redirect to a presigned S3 URL). Refuses `upload/` and `_stage.json`.
   - `POST /memories`, `POST /process`, `GET /events`, `PATCH`, `POST /report`: still `501`.
-- `app/routers/globe.py`: `GET /globe` returns `501`.
+- `app/routers/globe.py`: `GET /globe` returns `501` (filled in by 2b-backend).
 - `app/storage.py`: read-only `LocalStore` / `S3Store` (see `storage.md`).
 - `app/models.py`: Pydantic models to reuse (`Visibility`, `MemoryStatus`,
   `CreateMemoryRequest`, `CreateMemoryResponse`, `UploadTarget`, `UpdateMemoryRequest`,
@@ -149,22 +149,27 @@ state once and close. A comment line (`: ping`) every 15 s keeps the connection 
 ### `PATCH /memories/{id}`: edit details
 Request (existing `UpdateMemoryRequest`): any of `title`, `description`, `visibility`, `lat`, `lon`.
 - `lat`/`lon` must come together, are validated, and are **blurred before saving**
-  (`database.md` § Location). `location_source` = `user_pin`.
+  (`database.md` § Location). `location_source` defaults to `user_pin`; send
+  `"location_source": "video_gps"` when using `suggested_location`.
 - `visibility` other than `private` → `422` "Public sharing needs the privacy pass".
+- Only fields present in the request change; `"lat": null, "lon": null` clears the location.
+- `404` for an unknown memory, `422` for invalid values.
 
 Response `200`: the same shape as `GET /memories/{id}`.
 
-### `GET /globe?bbox=minLon,minLat,maxLon,maxLat&zoom=2`: pins for the globe
-Returns the dev user's memories that have a location inside `bbox`, grouped when zoomed out:
+### `GET /globe`: memories to show on the globe
+Optional `?bbox=minLon,minLat,maxLon,maxLat` (default: the whole world). Returns the dev
+user's memories that have a location, newest first:
 ```json
-{ "clusters": [ { "lat": 37.7, "lon": -122.4, "count": 4, "ids": ["mem_…", "…"] } ],
-  "memories": [ { "id": "mem_…", "title": "…", "lat": 48.86, "lon": 2.35,
-                  "status": "ready", "thumbnail_url": null } ] }
+{ "memories": [ { "id": "mem_…", "title": "Golden Gate walk", "lat": 37.82, "lon": -122.478764,
+                  "status": "ready", "captured_at": "2026-10-02T16:10:00Z",
+                  "created_at": "…", "thumbnail_url": null } ] }
 ```
-Grouping: snap each point to a grid whose cell size shrinks with zoom (e.g.
-`cell_deg = 360 / 2**(zoom + 3)`). A cell with 1 memory goes in `memories`; more go in
-`clusters`. Errors: `422` for a malformed `bbox` or `zoom` outside 0–20. A `bbox` where
-`minLon > maxLon` crosses ±180° and is allowed.
+- **Grouping into clusters happens in the browser** (`frontend.md` § Page `/`), which is fine
+  up to thousands of memories. Server-side grouping (PostGIS `ST_ClusterDBSCAN`, or a grid)
+  comes back when there are many more, or with public memories from other users.
+- A `bbox` with `minLon > maxLon` crosses ±180° and is allowed (`db.list_in_bbox`).
+- `422` for a malformed `bbox` or values out of range.
 
 ### `GET /health`
 Exists: `{"status": "ok"}`.
