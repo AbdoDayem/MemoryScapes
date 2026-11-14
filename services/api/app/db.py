@@ -7,6 +7,8 @@ touches this file (and ``DATABASE_URL``).
     init_db()                      create tables, seed the dev user (call once at startup)
     create_memory / get_memory / list_memories / list_by_status / update_memory / set_status
     upsert_jobs / list_jobs        per-stage results copied from job/status.json
+    upsert_soundscape / get_soundscape / delete_soundscape / list_soundscapes
+                                   the SATIE soundscape a run produced (app/soundscapes.py)
     list_in_bbox                   memories inside a map rectangle, for the globe
     blur_location                  round a location to about 100 m
 """
@@ -27,7 +29,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
 from app.models import MemoryStatus, Visibility
-from app.schema import jobs, memories, metadata, users
+from app.schema import jobs, memories, metadata, soundscapes, users
 from app.settings import get_settings
 
 _engine: Engine | None = None
@@ -260,6 +262,54 @@ def list_jobs(memory_id: str) -> list[dict[str, Any]]:
     with get_engine().connect() as conn:
         return [_row(r) for r in conn.execute(
             select(jobs).where(jobs.c.memory_id == memory_id).order_by(jobs.c.id))]
+
+
+# ---------------------------------------------------------------------------- soundscapes
+
+SOUNDSCAPE_FIELDS = ("provider", "script", "samples", "host_map", "contract_id", "realize_id",
+                     "spent_cents", "generated", "from_library", "fallback_reason", "notes")
+
+
+def upsert_soundscape(memory_id: str, record: Mapping[str, Any]) -> dict[str, Any]:
+    """Store (or replace) the memory's soundscape. ``record`` has SOUNDSCAPE_FIELDS;
+    ``provider`` is required. Raises ValueError for unknown fields, IntegrityError if there's
+    no such memory."""
+    unknown = set(record) - set(SOUNDSCAPE_FIELDS)
+    if unknown:
+        raise ValueError(f"Unknown soundscape fields {sorted(unknown)}")
+    if not record.get("provider"):
+        raise ValueError("A soundscape needs a provider")
+    values = {k: record.get(k) for k in SOUNDSCAPE_FIELDS}
+    now = _now()
+    key = soundscapes.c.memory_id == memory_id
+    with get_engine().begin() as conn:
+        existing = conn.execute(select(soundscapes.c.created_at).where(key)).first()
+        if existing is None:
+            conn.execute(insert(soundscapes).values(memory_id=memory_id, created_at=now, updated_at=now, **values))
+        else:
+            conn.execute(update(soundscapes).where(key).values(updated_at=now, **values))
+        row = conn.execute(select(soundscapes).where(key)).first()
+    return _row(row)
+
+
+def get_soundscape(memory_id: str) -> dict[str, Any] | None:
+    with get_engine().connect() as conn:
+        return _row(conn.execute(select(soundscapes).where(soundscapes.c.memory_id == memory_id)).first())
+
+
+def delete_soundscape(memory_id: str) -> bool:
+    with get_engine().begin() as conn:
+        return conn.execute(delete(soundscapes).where(soundscapes.c.memory_id == memory_id)).rowcount > 0
+
+
+def list_soundscapes(provider: str | None = None) -> list[dict[str, Any]]:
+    """Every stored soundscape, newest first; ``provider="stub"`` lists the memories whose
+    SATIE soundscape failed (to re-run them when compositions are available again)."""
+    query = select(soundscapes).order_by(soundscapes.c.updated_at.desc())
+    if provider is not None:
+        query = query.where(soundscapes.c.provider == provider)
+    with get_engine().connect() as conn:
+        return [_row(r) for r in conn.execute(query)]
 
 
 def _from_unix(value: float | None) -> datetime | None:

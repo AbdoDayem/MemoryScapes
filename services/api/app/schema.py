@@ -15,6 +15,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     MetaData,
     String,
     Table,
@@ -84,4 +85,26 @@ jobs = Table(
     Column("started_at", UTCDateTime),
     Column("finished_at", UTCDateTime),
     UniqueConstraint("memory_id", "stage", name="jobs_memory_stage"),
+)
+
+# Added after the first three tables, which stay as they were: create_all adds a missing
+# table on startup and never alters existing ones, so this needs no migration.
+soundscapes = Table(
+    "soundscapes",
+    metadata,
+    # One row per memory: the soundscape its last pipeline run produced.
+    Column("memory_id", String(64), ForeignKey("memories.id", ondelete="CASCADE"), primary_key=True),
+    Column("provider", String(16), nullable=False),  # satie | stub (stub: no sound)
+    Column("script", Text),  # the .satie script; null when SATIE didn't produce one
+    Column("samples", JSON),  # samples.json as SATIE returned it: clip path -> {url, source, ...}
+    Column("host_map", JSON),  # SATIE host id -> audio source id
+    Column("contract_id", String(80)),
+    Column("realize_id", String(128)),
+    Column("spent_cents", Integer),  # what realize spent
+    Column("generated", Integer),  # sounds SATIE generated (0 when original-only)
+    Column("from_library", Integer),  # sounds taken from SATIE's library (0 when original-only)
+    Column("fallback_reason", Text),  # why there's no SATIE soundscape
+    Column("notes", JSON),  # the provider's notes (list of strings)
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("updated_at", UTCDateTime, nullable=False),
 )

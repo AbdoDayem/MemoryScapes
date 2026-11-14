@@ -34,6 +34,7 @@ holds facts about them. The memory id links the two.
 |---|---|---|
 | Uploaded video and audio, frames, 3D scene, sound tracks, progress | File storage, `services/workers/data/storage/{id}/` | Ordinary files (`.mp4`/`.mov`, `.wav`, `.jpg`, `.ply`, `.json`) |
 | Owner, title, status, location, dates | Database | Rows |
+| The SATIE soundscape a run produced: script, samples, host map, SATIE ids, spend | Database (`soundscapes`), copied from `soundscape/` when a run ends; the files stay, and the viewer reads those | Rows (text and JSON) |
 
 File layout and storage tech: see [`storage.md`](storage.md). File paths are never stored in
 the database, because they follow from the id.
@@ -88,6 +89,30 @@ One row per pipeline stage per run, copied from `job/status.json` so the databas
 
 Unique on `(memory_id, stage)`: a new run overwrites the previous run's rows.
 
+### `soundscapes`
+The SATIE soundscape the memory's last run produced, copied from file storage when the run
+ends (`app/soundscapes.py`, called from `pipeline.finish`). One row per memory, replaced on
+each run, and removed when the run left no soundscape. It was added after the first three
+tables without touching them: `create_all` creates it on startup, and API responses don't
+change. The viewer still loads the scene from the files through the manifest.
+
+| Column | Type | Notes |
+|---|---|---|
+| `memory_id` | text, primary key, → `memories.id`, delete cascades | |
+| `provider` | text, not null | `satie`, or `stub` when SATIE failed (the memory has no sound) |
+| `script` | text, nullable | The `.satie` script |
+| `samples` | JSON, nullable | `samples.json` as SATIE returned it: clip path → `{url, source, ...}` |
+| `host_map` | JSON, nullable | SATIE host id → audio source id |
+| `contract_id`, `realize_id` | text, nullable | SATIE's ids, for re-rendering |
+| `spent_cents`, `generated`, `from_library` | integer, nullable | From realize: 0, 0 and 0 when only the recordings were used |
+| `fallback_reason` | text, nullable | Why there's no SATIE soundscape |
+| `notes` | JSON, nullable | The provider's notes |
+| `created_at`, `updated_at` | datetime (UTC), not null | |
+
+SATIE's full answers (`soundscape/satie/raw.json`, about 50 KB) stay a file: they're for
+debugging. A memory made with the worker CLI has no `memories` row; give it one and store its
+soundscape with `python -m app.soundscapes <id> --register`.
+
 Not yet: `memory_assets` and `reports` from `init.sql`. Add them when versioned outputs and
 moderation are built.
 
@@ -139,6 +164,7 @@ serves them from storage alone (`backend.md`).
 | `update_memory(id, **fields) -> dict` | Title, description, visibility (only `private` for now), lat/lon (rounded here), location_source, captured_at |
 | `set_status(id, status, error=None)` | Status change, bumps `updated_at` |
 | `upsert_jobs(id, stages: dict)` | Copy the `stages` block of `job/status.json` into `jobs` |
+| `upsert_soundscape(id, record)`, `get_soundscape(id)`, `delete_soundscape(id)`, `list_soundscapes(provider=None)` | The `soundscapes` row; `list_soundscapes("stub")` finds memories to re-run through SATIE |
 | `list_in_bbox(min_lon, min_lat, max_lon, max_lat, owner_id) -> list[dict]` | Memories with a location inside the box. Handles boxes that cross ±180° by splitting into two ranges. |
 
 Tests use a temporary SQLite file per test (`tmp_path`).
