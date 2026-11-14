@@ -173,6 +173,8 @@ def get_memory(memory_id: str, request: Request) -> dict:
 
     The first five fields are what the viewer uses; keep their meaning. Memories made with
     the worker CLI have no database row and get ``null`` for the rest.
+    The manifest comes from the database (``memory_files``) when the memory is stored
+    there, else from file storage.
     No auth yet: every memory is readable, so run this locally only.
     """
     _check_id(memory_id)
@@ -181,8 +183,10 @@ def get_memory(memory_id: str, request: Request) -> dict:
     stages = {s: _stage_done(store, memory_id, s) for s in STAGES}
     if row is None and not any(stages.values()) and not store.list(f"{memory_id}/upload/"):
         raise HTTPException(404, f"No memory {memory_id!r}")
+    manifest = _stored_manifest(memory_id) if row is not None else None
     manifest_key = f"{memory_id}/publish/manifest.json"
-    manifest = json.loads(store.read_bytes(manifest_key)) if store.exists(manifest_key) else None
+    if manifest is None and store.exists(manifest_key):
+        manifest = json.loads(store.read_bytes(manifest_key))
     if row is not None:
         status = row["status"]  # the database decides; a re-run may sit on an old manifest
     else:
@@ -253,13 +257,17 @@ def _write_meta(memory_id: str, meta: dict) -> None:
 
 
 @router.get("/{memory_id}/files/{key:path}", name="get_memory_file")
-def get_memory_file(memory_id: str, key: str) -> Response:
-    """One stage output (splat LODs, audio, path, ...): a file locally, or a redirect to
-    a short-lived presigned URL on S3."""
+def get_memory_file(memory_id: str, key: str, request: Request) -> Response:
+    """One of the memory's files (splat LODs, audio, path, ...). From the database when the
+    memory is stored there (``memory_files``); otherwise a file locally, or a redirect to a
+    short-lived presigned URL on S3."""
     _check_id(memory_id)
     parts = key.split("/")
     if not key or ".." in parts or key.startswith(_PRIVATE) or parts[-1] == "_stage.json":
         raise HTTPException(404, "Not found")
+    stored = _stored_file(memory_id, key, request)
+    if stored is not None:
+        return stored
     store = get_store()
     full = f"{memory_id}/{key}"
     if isinstance(store, LocalStore):
@@ -274,6 +282,43 @@ def get_memory_file(memory_id: str, key: str) -> Response:
     if not store.exists(full):
         raise HTTPException(404, "Not found")
     return RedirectResponse(store.presigned_url(full), status_code=307)
+
+
+def _stored_manifest(memory_id: str) -> dict | None:
+    row = db.get_file(memory_id, "publish/manifest.json")
+    return json.loads(row["data"]) if row is not None else None
+
+
+_RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+
+def _stored_file(memory_id: str, key: str, request: Request) -> Response | None:
+    """The file from the database, or None when it isn't stored there. Same behaviour as
+    serving a file: an ETag (its SHA-256), 304 when unchanged, and single byte ranges."""
+    info = db.get_file_info(memory_id, key)
+    if info is None:
+        return None
+    etag = f'"{info["sha256"]}"'
+    headers = {"ETag": etag, "Accept-Ranges": "bytes"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    data = db.get_file(memory_id, key)["data"]
+    wanted = request.headers.get("range")
+    if wanted:
+        m = _RANGE.match(wanted.strip())
+        size = len(data)
+        start, end = (m.group(1), m.group(2)) if m else ("", "")
+        if not m or (not start and not end):
+            return Response(status_code=416, headers={**headers, "Content-Range": f"bytes */{size}"})
+        if start:
+            first, last = int(start), min(int(end), size - 1) if end else size - 1
+        else:  # "bytes=-500": the last 500 bytes
+            first, last = max(size - int(end), 0), size - 1
+        if first > last or first >= size:
+            return Response(status_code=416, headers={**headers, "Content-Range": f"bytes */{size}"})
+        return Response(data[first:last + 1], status_code=206, media_type=info["content_type"],
+                        headers={**headers, "Content-Range": f"bytes {first}-{last}/{size}"})
+    return Response(data, media_type=info["content_type"], headers=headers)
 
 
 def _check_id(memory_id: str) -> None:

@@ -15,7 +15,10 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
+    LargeBinary,
     MetaData,
+    PrimaryKeyConstraint,
     String,
     Table,
     Text,
@@ -84,4 +87,44 @@ jobs = Table(
     Column("started_at", UTCDateTime),
     Column("finished_at", UTCDateTime),
     UniqueConstraint("memory_id", "stage", name="jobs_memory_stage"),
+)
+
+# Added after the first three tables, which stay as they were: create_all adds a missing
+# table on startup and never alters existing ones, so this needs no migration.
+soundscapes = Table(
+    "soundscapes",
+    metadata,
+    # One row per memory: the soundscape its last pipeline run produced.
+    Column("memory_id", String(64), ForeignKey("memories.id", ondelete="CASCADE"), primary_key=True),
+    Column("provider", String(16), nullable=False),  # satie | stub (stub: no sound)
+    Column("script", Text),  # the .satie script; null when SATIE didn't produce one
+    Column("samples", JSON),  # samples.json as SATIE returned it: clip path -> {url, source, ...}
+    Column("host_map", JSON),  # SATIE host id -> audio source id
+    Column("contract_id", String(80)),
+    Column("realize_id", String(128)),
+    Column("spent_cents", Integer),  # what realize spent
+    Column("generated", Integer),  # sounds SATIE generated (0 when original-only)
+    Column("from_library", Integer),  # sounds taken from SATIE's library (0 when original-only)
+    Column("fallback_reason", Text),  # why there's no SATIE soundscape
+    Column("notes", JSON),  # the provider's notes (list of strings)
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("updated_at", UTCDateTime, nullable=False),
+)
+
+# Every file the viewer needs for a memory, with its bytes: the manifest and everything it
+# references (splat levels, walk path, sound stems, SATIE script and samples). Pipeline
+# working files (upload, frames, training output) aren't part of a memory and stay out.
+# Also new, so it too needs no migration.
+memory_files = Table(
+    "memory_files",
+    metadata,
+    Column("memory_id", String(64), ForeignKey("memories.id", ondelete="CASCADE"), nullable=False),
+    Column("key", String(255), nullable=False),  # path inside the memory, as the manifest names it
+    Column("kind", String(24), nullable=False),  # manifest | splat | path | stem | ambient | satie_script | satie_samples | other
+    Column("content_type", String(64), nullable=False),
+    Column("bytes", Integer, nullable=False),
+    Column("sha256", String(64), nullable=False),
+    Column("data", LargeBinary, nullable=False),
+    Column("updated_at", UTCDateTime, nullable=False),
+    PrimaryKeyConstraint("memory_id", "key", name="memory_files_pk"),
 )
