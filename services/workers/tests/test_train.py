@@ -106,6 +106,24 @@ def test_torch_trainer_learns_and_densifies(scene):
     assert np.isfinite(cloud.means).all() and np.isfinite(cloud.opacities).all()
 
 
+def test_curves_eval_frames_and_renders(scene):
+    """What splat/metrics.json, meta.json and renders/ are built from (docs/SPLAT_OUTPUTS.md)."""
+    renders = {}
+    result = GaussianTrainer("torch", device="cpu").train(
+        scene, small_config(steps=30, render_max_side=32),
+        on_render=lambda frame_id, rgb: renders.setdefault(frame_id, rgb))
+    curves = result.curves
+    assert set(curves) == {"iteration", "loss", "psnr", "num_gaussians", "elapsed_s"}
+    assert len({len(v) for v in curves.values()}) == 1 and len(curves["iteration"]) >= 2
+    assert curves["iteration"] == sorted(curves["iteration"]) and curves["iteration"][-1] == 30
+    assert all(np.isfinite(v).all() for v in curves.values())
+    assert curves["psnr"][-1] == pytest.approx(result.metrics["psnr"], abs=0.01)  # last = eval
+    ids = [p.stem for p in scene.image_paths]
+    assert result.eval_frames and set(result.eval_frames) <= set(ids)
+    assert list(renders) == ids
+    assert all(r.dtype == np.uint8 and r.shape == (24, 32, 3) for r in renders.values())
+
+
 def test_opacity_reset_runs(scene, monkeypatch):
     """gsplat 1.5.3 never resets opacity itself; our workaround must fire every reset_every."""
     from memoryscapes_workers.visual import train

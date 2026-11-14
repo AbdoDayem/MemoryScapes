@@ -123,7 +123,9 @@ def run_stage(
     started = time.time()
     if ctx.work_root is not None:
         ctx.work_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=f"ms-{stage}-", dir=ctx.work_root) as tmp:
+    # ignore_cleanup_errors: on Windows a file another process still holds can't be deleted.
+    with tempfile.TemporaryDirectory(prefix=f"ms-{stage}-", dir=ctx.work_root,
+                                     ignore_cleanup_errors=True) as tmp:
         work = Path(tmp)
         io = StageIO(ctx=ctx, stage=stage, work_dir=work, out_dir=work / "out")
         io.out_dir.mkdir()
@@ -148,4 +150,4 @@ def run_stage(
 
 def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")

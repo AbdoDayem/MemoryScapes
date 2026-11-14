@@ -11,6 +11,7 @@ Writes {memory_id}/poses/
     images/frame_*.jpg                        undistorted images matching sparse/0
     sparse_points.ply                         SfM points (xyz + rgb), world frame
     points3d.npy                              the same points, (N, 3) float32
+    points3d_rgb.npy                          their colours, (N, 3) uint8
     cameras.json                              [{frame_id, t, width, height, K, c2w,
                                                image_key}]: OpenCV c2w, t on the audio clock
     path.json                                 capture path for the viewer (three.js camera)
@@ -37,7 +38,7 @@ from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.stagekit import StageError, StageIO, run_stage, write_json
 
 STAGE = "poses"
-VERSION = "2"  # 2: cameras.json in the audio-stage contract format, points3d.npy
+VERSION = "3"  # 2: audio-stage contract (cameras.json, points3d.npy); 3: points3d_rgb.npy
 
 CAPTURE_HINT = (
     "Move slowly and steadily, walk through the space or orbit the subject instead of "
@@ -189,6 +190,7 @@ def _poses(io: StageIO, cfg: PosesConfig) -> dict:
 
     world_pts = np.array([p.xyz for p in model.points3D.values()])
     np.save(out / "points3d.npy", world_pts.astype(np.float32))
+    np.save(out / "points3d_rgb.npy", np.array([p.color for p in model.points3D.values()], np.uint8))
     stats = {
         "registered": len(frames),
         "frames": n_images,

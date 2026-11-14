@@ -9,10 +9,11 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12"]
     defaults:
       run:
@@ -39,7 +40,7 @@ jobs:
         run: python examples/run_example.py --out examples/out
 
       - name: Upload example reports
-        if: always() && matrix.python-version == '3.11'
+        if: always() && matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: example-reports
@@ -47,3 +48,46 @@ jobs:
             services/workers/examples/out/README.md
             services/workers/examples/out/*/report.md
             services/workers/examples/out/*/map.svg
+
+  # The visual stages with their real dependencies (CPU torch, gsplat, OpenCV, pycolmap,
+  # ffmpeg): ingest -> poses -> splat (PyTorch rasterizer) -> audio stages on a synthetic
+  # video, plus the rasterizer/trainer tests. Runners have no GPU, so gsplat's CUDA
+  # kernels are the one part this can't cover.
+  visual:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: services/workers
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/workers/pyproject.toml
+
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libgl1
+
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Install (CPU torch + visual extras)
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev,visual]"
+
+      - name: Check the optional tools are really there (so no test silently skips)
+        run: |
+          ffmpeg -version
+          python -c "import torch, gsplat, cv2, pycolmap; print('torch', torch.__version__, '| gsplat', gsplat.__version__, '| pycolmap', pycolmap.__version__)"
+
+      - name: All worker tests
+        run: pytest -q -rs

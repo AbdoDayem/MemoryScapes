@@ -48,7 +48,8 @@ memoryscapes-worker run mem_1 --until splat --set splat.trainer=torch    # Mac (
 ```
 
 `--until poses` turns any phone video into the inputs listed below, so the audio stages can be
-tried on real footage. The visual stages skip themselves when their inputs and config haven't
+tried on real footage. The splat stage writes the files in `docs/SPLAT_OUTPUTS.md` (`meta.json`,
+`metrics.json`, `point_cloud.ply`, `renders/`, `lods/`), which is what `tools/debugger` reads. The visual stages skip themselves when their inputs and config haven't
 changed (`--force` re-runs them). `splat.trainer=auto` (the default) uses gsplat on an NVIDIA
 GPU, otherwise the PyTorch rasterizer on Apple Silicon, otherwise `points`.
 

@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -181,6 +182,27 @@ def demux_audio(src: Path, dest_stem: Path, channels: int | None) -> Path:
     return dest
 
 
+def imread_rgb(path: Path) -> np.ndarray:
+    """Read an image as RGB uint8. Goes through bytes because cv2.imread can't open
+    non-ASCII paths on Windows."""
+    import cv2
+
+    img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError(f"could not decode image {path}")
+    return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+
+def imwrite_rgb(path: Path, rgb: np.ndarray, params: list[int] | None = None) -> None:
+    """Write an RGB uint8 image; the format follows the suffix (see imread_rgb)."""
+    import cv2
+
+    ok, buf = cv2.imencode(Path(path).suffix, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), params or [])
+    if not ok:
+        raise ValueError(f"could not encode image {path}")
+    Path(path).write_bytes(buf.tobytes())
+
+
 def fit_size(width: int, height: int, max_side: int) -> tuple[int, int]:
     """Scale to fit ``max_side`` (never upscale); dimensions even for yuv codecs."""
     scale = min(1.0, max_side / max(width, height))
@@ -204,8 +226,11 @@ def iter_frames(
         "-vf", f"fps={sample_fps:.6f},scale={w}:{h}:flags=area",
         "-f", "rawvideo", "-pix_fmt", pix_fmt, "-",
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    assert proc.stdout is not None and proc.stderr is not None
+    # stderr goes to a temp file, not a pipe: nobody reads it until the end, and a full
+    # pipe (4 KB on Windows) would block ffmpeg mid-decode.
+    err_file = tempfile.TemporaryFile()
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err_file)
+    assert proc.stdout is not None
     frame_bytes = w * h * channels
     finished = False
     try:
@@ -220,8 +245,9 @@ def iter_frames(
         if not finished:  # caller stopped early (or raised): don't report the broken pipe
             proc.kill()
         proc.stdout.close()
-        stderr = proc.stderr.read().decode(errors="replace")
-        proc.stderr.close()
         code = proc.wait()
+        err_file.seek(0)
+        stderr = err_file.read().decode(errors="replace")
+        err_file.close()
     if code != 0:
         raise RuntimeError(f"ffmpeg decode failed ({code}): {stderr.strip()[:300]}")

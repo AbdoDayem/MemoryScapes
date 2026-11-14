@@ -70,6 +70,9 @@ class TrainConfig(BaseModel):
     refine_start_iter: int = 500
     refine_every: int = 100
     reset_every: int = 0
+    # Renders of the trained splat from every keyframe (splat/renders/), long side <= this.
+    # 0 disables. Used by the debugger for side-by-side checks against the frames.
+    render_max_side: int = 800
 
 
 # Overrides applied per trainer unless the stage config sets the key explicitly.
@@ -114,6 +117,11 @@ class SceneData:
         return np.array([np.linalg.inv(m)[:3, 3] for m in self.w2c])
 
     @property
+    def frame_ids(self) -> list[str]:
+        """Same ids as poses/cameras.json (the image file stem)."""
+        return [p.stem for p in self.image_paths]
+
+    @property
     def scene_scale(self) -> float:
         c = self.cam_centers
         return float(np.linalg.norm(c - c.mean(axis=0), axis=1).max()) * 1.1
@@ -140,21 +148,30 @@ def load_scene(poses_dir: Path) -> SceneData:
                      model.points.astype(np.float32), model.colors.astype(np.float32) / 255.0)
 
 
+CURVE_KEYS = ("iteration", "loss", "psnr", "num_gaussians", "elapsed_s")
+
+
 @dataclass
 class TrainResult:
     cloud: GaussianCloud
-    metrics: dict = field(default_factory=dict)
+    metrics: dict = field(default_factory=dict)  # final summary
+    # Training curves as parallel arrays (CURVE_KEYS). psnr is on the training view of
+    # each logged step; the last entry is the evaluation PSNR over eval_frames.
+    curves: dict[str, list[float]] = field(default_factory=lambda: {k: [] for k in CURVE_KEYS})
+    eval_frames: list[str] = field(default_factory=list)
 
 
 CheckpointFn = Callable[[int, GaussianCloud], None]
 ProgressFn = Callable[[float, str], None]
+RenderFn = Callable[[str, np.ndarray], None]  # (frame_id, uint8 HxWx3 RGB)
 
 
 class Trainer(Protocol):
     name: str
 
     def train(self, scene: SceneData, cfg: TrainConfig, on_checkpoint: CheckpointFn | None = None,
-              on_progress: ProgressFn | None = None) -> TrainResult: ...
+              on_progress: ProgressFn | None = None,
+              on_render: RenderFn | None = None) -> TrainResult: ...
 
 
 def init_from_points(points: np.ndarray, colors: np.ndarray, sh_degree: int, opacity: float,
@@ -173,7 +190,7 @@ def init_from_points(points: np.ndarray, colors: np.ndarray, sh_degree: int, opa
 class PointsTrainer:
     name = "points"
 
-    def train(self, scene, cfg, on_checkpoint=None, on_progress=None) -> TrainResult:
+    def train(self, scene, cfg, on_checkpoint=None, on_progress=None, on_render=None) -> TrainResult:
         knn = knn_mean_dist_np(scene.points)
         cloud = init_from_points(scene.points, scene.colors, cfg.sh_degree, 0.8, 1.0, knn)
         return TrainResult(cloud, {"trainer": self.name, "note": "no optimization"})
@@ -211,7 +228,7 @@ class GaussianTrainer:
             dev = "cuda" if torch.cuda.is_available() else "cpu"
         return torch.device(dev), rasterization
 
-    def train(self, scene, cfg, on_checkpoint=None, on_progress=None) -> TrainResult:
+    def train(self, scene, cfg, on_checkpoint=None, on_progress=None, on_render=None) -> TrainResult:
         import torch
         import torch.nn.functional as F
         from gsplat.strategy import DefaultStrategy, MCMCStrategy
@@ -273,20 +290,35 @@ class GaussianTrainer:
             state = strategy.initialize_state(scene_scale=scene_scale)
         strategy.check_sanity(params, optimizers)
 
-        def render(i: int, sh_degree: int, bg):
+        def render(i: int, sh_degree: int, bg, scale: float = 1.0):
             h, w = gts[i].shape[:2]
+            K = Ks_t[i : i + 1]
+            if scale != 1.0:
+                rw, rh = max(1, round(w * scale)), max(1, round(h * scale))
+                K = K.clone()
+                K[:, 0] *= rw / w
+                K[:, 1] *= rh / h
+                w, h = rw, rh
             return rasterize(
                 means=params["means"], quats=params["quats"], scales=torch.exp(params["scales"]),
                 opacities=torch.sigmoid(params["opacities"]),
                 colors=torch.cat([params["sh0"], params["shN"]], dim=1),
-                viewmats=viewmats[i : i + 1], Ks=Ks_t[i : i + 1], width=w, height=h,
+                viewmats=viewmats[i : i + 1], Ks=K, width=w, height=h,
                 sh_degree=sh_degree, packed=False,
                 rasterize_mode="antialiased" if cfg.antialiased else "classic",
                 backgrounds=bg[None] if bg is not None else None,
             )
 
+        curves: dict[str, list[float]] = {k: [] for k in CURVE_KEYS}
+
+        def log_curve(step: int, loss_v: float, psnr_v: float) -> None:
+            for key, v in zip(CURVE_KEYS, (step, loss_v, psnr_v, len(params["means"]),
+                                           round(time.time() - t0, 2)), strict=True):
+                curves[key].append(round(float(v), 5) if isinstance(v, float) else v)
+
         order: list[int] = []
         log_every = max(1, cfg.steps // 50)
+        loss_v = float("nan")
         for step in range(cfg.steps):
             if not order:
                 order = list(rng.permutation(train_idx))
@@ -315,15 +347,27 @@ class GaussianTrainer:
                 strategy.step_post_backward(params, optimizers, state, step, info, packed=False)
                 _maybe_reset_opacity(strategy, params, optimizers, state, step)
 
-            if on_progress and step % log_every == 0:
-                on_progress(step / cfg.steps,
-                            f"step {step}/{cfg.steps} loss {loss.item():.4f} gaussians {len(params['means'])}")
+            if step % log_every == 0 or step == cfg.steps - 1:
+                loss_v = loss.item()
+                mse = F.mse_loss(pred.detach().clamp(0, 1), gt).item()
+                log_curve(step, loss_v, -10 * math.log10(max(mse, 1e-10)))
+                if on_progress:
+                    on_progress(step / cfg.steps,
+                                f"step {step}/{cfg.steps} loss {loss_v:.4f} gaussians {len(params['means'])}")
             if on_checkpoint and (step + 1) in cfg.preview_steps:
                 on_checkpoint(step + 1, _to_cloud(params, cfg.antialiased))
 
         psnr = _evaluate(render, gts, test_idx, cfg.sh_degree)
+        log_curve(cfg.steps, loss_v, psnr)
+        if on_render and cfg.render_max_side > 0:
+            with torch.no_grad():
+                for i, frame_id in enumerate(scene.frame_ids):
+                    h, w = gts[i].shape[:2]
+                    out, _, _ = render(i, cfg.sh_degree, None, min(1.0, cfg.render_max_side / max(h, w)))
+                    on_render(frame_id, (out[0].clamp(0, 1) * 255).round().byte().cpu().numpy())
         cloud = _to_cloud(params, cfg.antialiased)
-        return TrainResult(cloud, {
+        return TrainResult(cloud, curves=curves,
+                           eval_frames=[scene.frame_ids[int(i)] for i in test_idx], metrics={
             "trainer": self.name, "device": str(dev), "strategy": "mcmc" if mcmc else "default",
             "steps": cfg.steps, "gaussians": len(cloud),
             "psnr": round(psnr, 2), "psnr_split": "holdout" if cfg.holdout_every > 0 else "train",
@@ -336,9 +380,11 @@ class GaussianTrainer:
 def _load_images(scene: SceneData, max_side: int) -> tuple[list[np.ndarray], np.ndarray]:
     import cv2
 
+    from memoryscapes_workers.visual.video import imread_rgb
+
     images, Ks = [], []
     for path, K in zip(scene.image_paths, scene.Ks, strict=True):
-        img = cv2.cvtColor(cv2.imread(str(path), cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+        img = imread_rgb(path)
         h, w = img.shape[:2]
         f = min(1.0, max_side / max(h, w))
         K = K.copy()
