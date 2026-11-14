@@ -96,10 +96,10 @@ def _splat(io: StageIO, cfg: SplatConfig) -> dict:
         io.progress(0.1 + 0.8 * step / max(cfg.train.steps, 1), f"preview at step {step}")
 
     def on_render(frame_id: str, rgb: np.ndarray) -> None:
-        import cv2
+        from memoryscapes_workers.visual.video import imwrite_rgb
 
         (out / "renders").mkdir(exist_ok=True)
-        cv2.imwrite(str(out / "renders" / f"{frame_id}.png"), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        imwrite_rgb(out / "renders" / f"{frame_id}.png", rgb)
 
     result = trainer.train(
         scene, cfg.train, on_checkpoint=on_checkpoint,

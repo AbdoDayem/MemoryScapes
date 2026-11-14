@@ -42,7 +42,7 @@ def _parse_value(raw: str) -> Any:
 
 def build_config(config_file: Path | None, overrides: list[str]) -> dict:
     """Merge a JSON config file with ``stage.key.sub=value`` overrides."""
-    cfg: dict = json.loads(config_file.read_text()) if config_file else {}
+    cfg: dict = json.loads(config_file.read_text(encoding="utf-8")) if config_file else {}
     for item in overrides:
         key, _, raw = item.partition("=")
         if not raw:
@@ -71,9 +71,9 @@ def run_isolated(memory_id: str, stages: list[str], config: dict, force: bool = 
     launchers on Windows. Storage comes from the environment; logs stream to stderr.
     """
     results: dict[str, Any] = {}
-    with tempfile.TemporaryDirectory(prefix="ms-run-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="ms-run-", ignore_cleanup_errors=True) as tmp:
         cfg_path, out_path = Path(tmp) / "config.json", Path(tmp) / "result.json"
-        cfg_path.write_text(json.dumps(config))
+        cfg_path.write_text(json.dumps(config), encoding="utf-8")
         for stage in [s for s in topological_order() if s in stages]:
             out_path.unlink(missing_ok=True)
             cmd = [sys.executable, "-m", "memoryscapes_workers"]
@@ -86,7 +86,7 @@ def run_isolated(memory_id: str, stages: list[str], config: dict, force: bool = 
             if work_root is not None:
                 cmd += ["--work-root", str(work_root)]
             code = subprocess.run(cmd, check=False).returncode
-            out = json.loads(out_path.read_text()) if out_path.exists() else {}
+            out = json.loads(out_path.read_text(encoding="utf-8")) if out_path.exists() else {}
             if "stage_error" in out:
                 raise StageError(**out["stage_error"])
             if "result" not in out:
@@ -127,7 +127,7 @@ def _run_for_parent(args, storage: Storage, config: dict) -> int:
     if "result" in out:
         out["result"] = next(iter(out["result"].values()), None) if len(out["result"]) == 1 \
             else out["result"]
-    args.result_file.write_text(json.dumps(out, default=_jsonable))
+    args.result_file.write_text(json.dumps(out, default=_jsonable), encoding="utf-8")
     return code
 
 

@@ -164,7 +164,7 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
     for i, rgb in enumerate(video.iter_frames(src, o_size, sample_fps)):
         if i in wanted:
             name = f"frame_{wanted[i]:05d}.jpg"
-            cv2.imwrite(str(frames_dir / name), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), params)
+            video.imwrite_rgb(frames_dir / name, rgb, params)
             frames_meta.append({
                 "file": f"frames/{name}",
                 "t": round(i / sample_fps, 4),

@@ -32,4 +32,4 @@ def small_video(tmp_path_factory) -> tuple[Path, dict]:
 
     out = tmp_path_factory.mktemp("synthetic_small")
     video = generate(out, SyntheticSpec(seconds=4.0, fps=15, width=320, height=180))
-    return video, json.loads((out / "ground_truth.json").read_text())
+    return video, json.loads((out / "ground_truth.json").read_text(encoding="utf-8"))

@@ -380,9 +380,11 @@ class GaussianTrainer:
 def _load_images(scene: SceneData, max_side: int) -> tuple[list[np.ndarray], np.ndarray]:
     import cv2
 
+    from memoryscapes_workers.visual.video import imread_rgb
+
     images, Ks = [], []
     for path, K in zip(scene.image_paths, scene.Ks, strict=True):
-        img = cv2.cvtColor(cv2.imread(str(path), cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+        img = imread_rgb(path)
         h, w = img.shape[:2]
         f = min(1.0, max_side / max(h, w))
         K = K.copy()

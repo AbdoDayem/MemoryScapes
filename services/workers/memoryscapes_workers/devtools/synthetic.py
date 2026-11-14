@@ -313,7 +313,7 @@ def generate(out_dir: Path, spec: SyntheticSpec | None = None) -> Path:
         "location": list(spec.lat_lon_alt),
         "captured_at": spec.captured_at,
     }
-    (out_dir / "ground_truth.json").write_text(json.dumps(gt, indent=1))
+    (out_dir / "ground_truth.json").write_text(json.dumps(gt, indent=1), encoding="utf-8")
     return video_path
 
 

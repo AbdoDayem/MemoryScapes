@@ -130,3 +130,23 @@ def test_ingest_fails_early_on_static_camera(ctx, tmp_path):
     with pytest.raises(StageError) as err:
         ingest.run(ctx)
     assert err.value.hint
+
+
+@needs_cv2
+def test_image_io_handles_non_ascii_paths(tmp_path):
+    """cv2.imread/imwrite can't open non-ASCII paths on Windows; our helpers can."""
+    from memoryscapes_workers.visual.video import imread_rgb, imwrite_rgb
+
+    rgb = np.zeros((6, 8, 3), np.uint8)
+    rgb[..., 0], rgb[2:4, 3:5] = 200, (10, 220, 30)
+    for name in ("frame.png", "frame.jpg"):
+        path = tmp_path / "Fotos Ünïcødé 写真" / name
+        path.parent.mkdir(exist_ok=True)
+        imwrite_rgb(path, rgb)
+        back = imread_rgb(path)
+        assert back.shape == rgb.shape
+        err = np.abs(back.astype(int) - rgb)
+        if name.endswith(".png"):
+            assert err.max() == 0
+        else:  # lossy, and chroma subsampling smears the small block
+            assert err.mean() < 20
