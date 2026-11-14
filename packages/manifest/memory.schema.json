@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemoryManifest",
+  "type": "object",
+  "required": ["id", "version", "coord_frame", "splat", "audio", "meta"],
+  "properties": {
+    "id": { "type": "string" },
+    "version": { "type": "integer", "minimum": 1 },
+    "coord_frame": {
+      "type": "object",
+      "required": ["units", "up"],
+      "properties": {
+        "units": { "const": "meters" },
+        "up": { "enum": ["+y", "+z"] },
+        "origin_geo": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+        "heading_deg": { "type": "number" }
+      }
+    },
+    "splat": {
+      "type": "object",
+      "required": ["lods"],
+      "properties": {
+        "lods": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["url"],
+            "properties": { "url": { "type": "string" }, "count": { "type": "integer" } }
+          }
+        }
+      }
+    },
+    "navigation": {
+      "type": "object",
+      "properties": {
+        "spawn": { "type": "object" },
+        "walkable_bounds": { "type": "object" },
+        "original_path": { "type": "string" }
+      }
+    },
+    "audio": {
+      "type": "object",
+      "required": ["sources"],
+      "properties": {
+        "ambient_bed": {
+          "type": "object",
+          "properties": {
+            "url": { "type": "string" },
+            "format": { "enum": ["stereo", "ambisonic_foa", "ambisonic_hoa"] }
+          }
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "label", "url"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "url": { "type": "string" },
+              "position": { "type": ["array", "null"], "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+              "trajectory": { "type": ["string", "null"] },
+              "ref_distance": { "type": "number" },
+              "rolloff": { "type": "number" },
+              "gain": { "type": "number" },
+              "loop": { "type": "boolean" },
+              "confidence": { "type": "number" }
+            }
+          }
+        },
+        "soundscape_provider": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "job_id": { "type": "string" },
+            "version": { "type": "string" }
+          }
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "captured_at": { "type": "string", "format": "date-time" },
+        "visibility": { "enum": ["private", "unlisted", "public"] },
+        "owner": { "type": "string" }
+      }
+    }
+  }
+}

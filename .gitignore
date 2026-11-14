@@ -1,0 +1,25 @@
+# Node
+node_modules/
+.next/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Env / local data
+.env
+*.local
+data/
+
+# Pipeline outputs
+*.ply
+*.spz
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
