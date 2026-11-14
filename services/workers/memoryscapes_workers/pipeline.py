@@ -7,7 +7,7 @@ The visual and audio branches run in parallel and meet at localization, which ne
 camera poses and scene geometry. Wire this into Temporal (or Celery for the MVP).
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.stages import (
@@ -20,7 +20,7 @@ from memoryscapes_workers.stages import (
     splat,
 )
 
-Stage = Callable[[StageContext], None]
+Stage = Callable[[StageContext], object]
 
 # stage name -> (function, upstream dependencies)
 DAG: dict[str, tuple[Stage, list[str]]] = {
@@ -32,6 +32,9 @@ DAG: dict[str, tuple[Stage, list[str]]] = {
     "soundscape": (soundscape.run, ["localize"]),
     "publish": (publish.run, ["splat", "soundscape"]),
 }
+
+# The implemented MVP path: video -> keyframes -> poses -> splat.
+VISUAL_STAGES = ["ingest", "poses", "splat"]
 
 
 def topological_order() -> list[str]:
@@ -47,8 +50,30 @@ def topological_order() -> list[str]:
     return done
 
 
-def run_local(ctx: StageContext) -> None:
-    """Run every stage sequentially. For local development only."""
+def ancestors(stage: str) -> list[str]:
+    """All stages ``stage`` depends on, in topological order."""
+    seen: set[str] = set()
+    stack = list(DAG[stage][1])
+    while stack:
+        s = stack.pop()
+        if s not in seen:
+            seen.add(s)
+            stack.extend(DAG[s][1])
+    return [s for s in topological_order() if s in seen]
+
+
+def run_local(ctx: StageContext, stages: Iterable[str] | None = None) -> dict[str, object]:
+    """Run stages sequentially (all of them by default). For local development only.
+
+    Completed stages whose inputs and config are unchanged are skipped automatically.
+    """
+    wanted = list(stages) if stages is not None else topological_order()
+    unknown = [s for s in wanted if s not in DAG]
+    if unknown:
+        raise ValueError(f"Unknown stages: {unknown}")
+    results = {}
     for name in topological_order():
-        fn, _ = DAG[name]
-        fn(ctx)
+        if name in wanted:
+            fn, _ = DAG[name]
+            results[name] = fn(ctx)
+    return results
