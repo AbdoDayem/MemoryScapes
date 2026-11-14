@@ -37,7 +37,7 @@ the whole memory. The memory id links the two.
 | Uploaded video and audio, frames, 3D scene, sound tracks, progress | File storage, `services/workers/data/storage/{id}/` | Ordinary files (`.mp4`/`.mov`, `.wav`, `.jpg`, `.ply`, `.json`) |
 | Owner, title, status, location, dates | Database | Rows |
 | The SATIE soundscape a run produced: script, samples, host map, SATIE ids, spend | Database (`soundscapes`), copied from `soundscape/` when a run ends; the files stay, and the viewer reads those | Rows (text and JSON) |
-| The finished memory: manifest, splat levels, walk path, sound stems, SATIE script and samples | Database (`memory_files`, with their bytes), copied when a run ends ready; the files stay, and the API serves those | Rows (bytes + size + SHA-256) |
+| The finished memory: manifest, splat levels, walk path, sound stems, SATIE script and samples | Database (`memory_files`, with their bytes), copied when a run ends ready. The API serves the memory from here, falling back to file storage for anything not stored | Rows (bytes + size + SHA-256) |
 
 File layout and storage tech: see [`storage.md`](storage.md). File paths are never stored in
 the database, because they follow from the id.
@@ -120,8 +120,14 @@ soundscape with `python -m app.soundscapes <id> --register`.
 Every file the viewer needs for a memory, with its bytes: `publish/manifest.json` plus
 everything the manifest names. Copied by `app/memory_files.py` when a run finishes ready
 (`pipeline.finish`). Unchanged files (same SHA-256) aren't rewritten, and files the manifest
-no longer names are removed. Like `soundscapes`, it's a new table, so it needs no migration
-and changes no API response.
+no longer names are removed. Like `soundscapes`, it's a new table, so it needs no migration.
+
+The API serves a stored memory from this table. `GET /memories/{id}` returns the stored
+manifest, and `GET /memories/{id}/files/{key}` returns the stored bytes, with an ETag (the
+SHA-256), 304 when unchanged, and byte ranges. Anything not stored (memories made with the
+worker CLI, stage outputs that aren't part of the memory) still comes from file storage.
+The response shapes are unchanged, so the viewer needs no change. During a re-run the
+stored version stays what viewers get until the run finishes ready.
 
 | Column | Type | Notes |
 |---|---|---|

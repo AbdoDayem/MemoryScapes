@@ -9,7 +9,7 @@ touches this file (and ``DATABASE_URL``).
     upsert_jobs / list_jobs        per-stage results copied from job/status.json
     upsert_soundscape / get_soundscape / delete_soundscape / list_soundscapes
                                    the SATIE soundscape a run produced (app/soundscapes.py)
-    put_file / get_file / list_files / delete_files
+    put_file / get_file / get_file_info / list_files / delete_files
                                    a memory's files, with their bytes (app/memory_files.py)
     list_in_bbox                   memories inside a map rectangle, for the globe
     blur_location                  round a location to about 100 m
@@ -333,6 +333,13 @@ def put_file(memory_id: str, key: str, kind: str, content_type: str, data: bytes
 def get_file(memory_id: str, key: str) -> dict[str, Any] | None:
     """One file, with its bytes in ``data``."""
     query = select(memory_files).where(and_(memory_files.c.memory_id == memory_id, memory_files.c.key == key))
+    with get_engine().connect() as conn:
+        return _row(conn.execute(query).first())
+
+
+def get_file_info(memory_id: str, key: str) -> dict[str, Any] | None:
+    """One file's details without its bytes."""
+    query = select(*_FILE_INFO).where(and_(memory_files.c.memory_id == memory_id, memory_files.c.key == key))
     with get_engine().connect() as conn:
         return _row(conn.execute(query).first())
 

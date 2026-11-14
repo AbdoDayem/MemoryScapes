@@ -144,3 +144,53 @@ def test_the_memory_response_is_unchanged_by_stored_files(store):
     memory_files.store("mem_1")
     assert client.get("/memories/mem_1").json() == before
     assert client.get("/memories/mem_1/files/splat/lods/lod0.spz").content == lod
+
+
+def test_the_api_serves_a_stored_memory_from_the_database(store):
+    memory_files.store("mem_1")
+    db.set_status("mem_1", "ready")
+    for key in ("publish/manifest.json", "splat/lods/lod0.spz", "separate/stems/s1.wav"):
+        store.delete(f"mem_1/{key}")  # gone from storage: the database still has the memory
+    client = TestClient(app)
+    body = client.get("/memories/mem_1").json()
+    assert body["status"] == "ready" and body["manifest"] == MANIFEST
+    r = client.get("/memories/mem_1/files/splat/lods/lod0.spz")
+    assert r.status_code == 200 and r.content == FILES["splat/lods/lod0.spz"]
+    assert r.headers["content-type"] == "application/octet-stream"
+    wav = client.get("/memories/mem_1/files/separate/stems/s1.wav")
+    assert wav.content == FILES["separate/stems/s1.wav"] and wav.headers["content-type"] == "audio/wav"
+
+
+def test_the_database_copy_wins_over_storage(store):
+    """Mid re-run, storage holds new outputs; the memory stays what was stored last."""
+    memory_files.store("mem_1")
+    store.write_bytes("mem_1/splat/lods/lod0.spz", b"half-trained")
+    manifest = json.loads(json.dumps(MANIFEST))
+    manifest["version"] = 5
+    store.write_bytes("mem_1/publish/manifest.json", json.dumps(manifest).encode())
+    client = TestClient(app)
+    assert client.get("/memories/mem_1").json()["manifest"]["version"] == 4
+    assert client.get("/memories/mem_1/files/splat/lods/lod0.spz").content == FILES["splat/lods/lod0.spz"]
+
+
+def test_files_that_are_not_stored_come_from_storage(store):
+    memory_files.store("mem_1")
+    store.write_bytes("mem_1/ingest/meta.json", b'{"fps": 30}')  # a stage output, not part of the memory
+    client = TestClient(app)
+    assert client.get("/memories/mem_1/files/ingest/meta.json").content == b'{"fps": 30}'
+    assert client.get("/memories/mem_1/files/upload/clip.mp4").status_code == 404  # still private
+
+
+def test_stored_files_support_etags_and_ranges(store):
+    memory_files.store("mem_1")
+    client = TestClient(app)
+    url = "/memories/mem_1/files/separate/stems/s1.wav"
+    data = FILES["separate/stems/s1.wav"]
+    etag = client.get(url).headers["etag"]
+    assert etag == f'"{hashlib.sha256(data).hexdigest()}"'
+    assert client.get(url, headers={"If-None-Match": etag}).status_code == 304
+    part = client.get(url, headers={"Range": "bytes=4-11"})
+    assert part.status_code == 206 and part.content == data[4:12]
+    assert part.headers["content-range"] == f"bytes 4-11/{len(data)}"
+    assert client.get(url, headers={"Range": "bytes=-4"}).content == data[-4:]
+    assert client.get(url, headers={"Range": "bytes=99999-"}).status_code == 416
