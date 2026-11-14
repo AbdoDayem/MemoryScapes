@@ -38,7 +38,6 @@ environment or `.env`:
 | `WORKERS_PYTHON` | `<repo>/services/workers/.venv/bin/python` | Starting the pipeline |
 | `DEV_USER_ID` | `usr_dev` | Owner of every memory until real login |
 | `MAX_UPLOAD_MB` | `500` | Upload size limit |
-| `PIPELINE_MAX_SECONDS` | `60` | Passed to the runner's `--max-seconds` |
 | `CORS_ORIGINS` | `http://localhost:3000` | The web app's origin (already read in `main.py`) |
 
 `STORAGE_BACKEND`, `STORAGE_ROOT` and `CORS_ORIGINS` are already read directly from the
@@ -73,8 +72,8 @@ frontend doesn't change.
 
 ### `PUT /memories/{id}/upload/{file_name}`: upload one file
 Body: the raw file bytes (not a form). `Content-Type` is the file's type.
-- Saves through the storage interface: `storage.save("{id}/upload/video.<ext>", body,
-  max_bytes)` or `audio.<ext>`, picked by extension (the names the debugger uses; the
+- Saves through the storage interface (`store.writer("{id}/upload/video.<ext>")`, streamed
+  in chunks with the size checked as it arrives) or `audio.<ext>`, picked by extension (the names the debugger uses; the
   pipeline finds files by extension). Writes the original names to `upload/meta.json`.
   See [`storage.md`](storage.md).
 - Status → `uploading`.
@@ -83,11 +82,13 @@ Response `200`: `{ "file_name": "IMG_1234.MOV", "stored_as": "video.mov", "bytes
 
 Errors: `404` unknown memory; `409` while it's processing; `413` over `MAX_UPLOAD_MB`;
 `422` if the name isn't one returned by `POST /memories` or has an unsupported extension.
-`storage.save` writes to a temp key and renames at the end, so a broken upload never leaves
-half a video.
+The writer saves to a hidden temp file and renames it at the end, so a broken or too-large
+upload never leaves half a video. Uploading the video again replaces the previous one.
+`501` if storage isn't local (uploads go straight to S3 later).
 
 ### `POST /memories/{id}/process`: start the pipeline
-No body. Starts the runner (§ Starting the pipeline). Status → `processing`.
+No body. Starts the runner (§ Starting the pipeline). Status → `processing`. Allowed again
+after `failed` or `ready` (re-processing). `503` if the pipeline isn't installed.
 
 Response `202`: `{ "id": "mem_…", "status": "processing" }`
 
@@ -106,15 +107,16 @@ next to them:
   "title": "…", "description": null, "visibility": "private",
   "lat": 37.81, "lon": -122.478, "location_source": "video_gps",
   "captured_at": "2026-11-10T18:30:00Z", "created_at": "…", "error": null,
-  "stage_detail": { "current": "poses", "detail": "<latest log line>",
+  "stage_detail": { "state": "running", "current": "poses", "detail": "<latest log line>",
                     "stages": { "ingest": {"status": "done", "seconds": 12.3},
                                 "poses":  {"status": "running"}, "…": {} } },
   "suggested_location": { "lat": 37.81, "lon": -122.478 } }
 ```
 - Existing fields, unchanged: `id`, `stages` (stage → finished), `manifest`, `asset_base`.
-- `status`: still `ready` when the manifest exists. Otherwise it comes from the database row
-  (`draft`, `uploading`, `processing`, `failed`). The viewer treats anything other than
-  `ready` as "still processing", so it must learn to stop on `failed` (frontend.md).
+- `status`: for a memory with a database row, **the row decides** (`draft`, `uploading`,
+  `processing`, `ready`, `failed`), because a re-run can sit on top of an old manifest. For a
+  CLI memory (no row), `ready` when the manifest exists, else `processing`, as before. The
+  viewer stops polling on `failed` (Marko's PR #11).
 - New fields come from the database row. `stage_detail` comes from `job/status.json`
   (or the `jobs` table if the file is gone), and is `null` before processing starts.
   `suggested_location` is the blurred GPS from `ingest/meta.json` when it exists and no
@@ -172,7 +174,7 @@ Exists: `{"status": "ok"}`.
 `POST /process` runs, in the background:
 
 ```
-{WORKERS_PYTHON} -m memoryscapes_workers.run --root {STORAGE_ROOT} --memory {id} --max-seconds {PIPELINE_MAX_SECONDS}
+{WORKERS_PYTHON} -m memoryscapes_workers.run --root {STORAGE_ROOT} --memory {id}
 ```
 
 with working directory `services/workers`, through `subprocess.Popen`, stdout and stderr
@@ -184,7 +186,9 @@ sent to `/dev/null` (the runner writes its own `job/log.txt`).
 - Keep a dict `{memory_id: Popen}` so only one run per memory happens at a time.
 - A background thread watches for the run to finish (`Popen.wait()`): read the final
   `status.json`, call `db.upsert_jobs` and `db.set_status(ready|failed)`.
-  `GET /memories/{id}` also mirrors `status.json` into `jobs` when it reads it.
+  How much of the video is processed is the runner's own default (`--max-seconds`, 60 s
+  today); the API doesn't override it. The runner's stdout/stderr go to
+  `job/runner-output.txt`, so a run that dies before logging still has a reason.
 - On API startup, any memory still `processing` with no live process is marked `failed`
   ("interrupted").
 - `ffmpeg` must be on `PATH` (installed with Homebrew).

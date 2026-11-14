@@ -5,7 +5,7 @@ routers don't depend on the database library, and switching SQLite to Postgres o
 touches this file (and ``DATABASE_URL``).
 
     init_db()                      create tables, seed the dev user (call once at startup)
-    create_memory / get_memory / list_memories / update_memory / set_status
+    create_memory / get_memory / list_memories / list_by_status / update_memory / set_status
     upsert_jobs / list_jobs        per-stage results copied from job/status.json
     list_in_bbox                   memories inside a map rectangle, for the globe
     blur_location                  round a location to about 100 m
@@ -162,6 +162,13 @@ def list_memories(owner_id: str) -> list[dict[str, Any]]:
              .order_by(memories.c.created_at.desc(), memories.c.id))
     with get_engine().connect() as conn:
         return [_row(r) for r in conn.execute(query)]
+
+
+def list_by_status(status: str | MemoryStatus) -> list[dict[str, Any]]:
+    """Every memory with this status (e.g. to find runs interrupted by an API restart)."""
+    status = MemoryStatus(status).value
+    with get_engine().connect() as conn:
+        return [_row(r) for r in conn.execute(select(memories).where(memories.c.status == status))]
 
 
 def update_memory(memory_id: str, **fields: Any) -> dict[str, Any] | None:

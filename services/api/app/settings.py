@@ -26,7 +26,6 @@ class Settings(BaseSettings):
     dev_user_id: str = "usr_dev"
     dev_user_handle: str = "dev"
     max_upload_mb: int = 500
-    pipeline_max_seconds: float = 60.0
     workers_python: str = DEFAULT_WORKERS_PYTHON
 
 

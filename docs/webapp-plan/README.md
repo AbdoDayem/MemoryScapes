@@ -91,21 +91,24 @@ parts and ends with something you can demo.
 - [ ] Tell the team about SQLite and the folder layout
 
 ### Phase 1: Database layer (about 2 days)
-- [ ] `services/api/app/settings.py`, `schema.py`, `db.py`
-- [ ] Seed script with a dev user and ~10 fake memories
-- [ ] Database tests
+- [x] `services/api/app/settings.py`, `schema.py`, `db.py` (PR #12)
+- [x] Seed script with a dev user and 11 fake memories (`python -m app.seed`)
+- [x] Database tests
 
 ### Phase 2: Slice 1, upload a video (3–4 days)
-- [ ] Backend: add writes (`save`, `delete_prefix`) to the existing `app/storage.py`
-- [ ] Backend: `POST /memories`, `PUT …/upload/{name}`, `POST …/process`; `GET /memories/{id}` reads the database row too
-- [ ] Frontend: upload form with checks, capture tips and a progress bar
+Split in two PRs: **2a backend**, then **2b upload page** once its design is agreed.
+- [x] 2a: add writes (`writer`, `write_bytes`, `delete_prefix`) to the existing `app/storage.py`
+- [x] 2a: `app/pipeline.py`, which starts the workers' runner and records the result
+- [x] 2a: `POST /memories`, `PUT …/upload/{name}`, `POST …/process`, `GET /memories`; `GET /memories/{id}` reads the database row too
+- [ ] Design the upload page (layout, steps, errors, hand-off to the viewer)
+- [ ] 2b: upload form with checks, capture tips and a progress bar
 - [ ] Demo: upload a phone video and see its files appear in `storage/{id}/`
 
 ### Phase 3: Slice 2, progress (about 2 days)
-- [ ] Backend: `GET /memories/{id}` adds `stage_detail` from `job/status.json` and the
-      `failed` status; mirror stages into `jobs`
-- [ ] Frontend: a progress panel on `/memories/{id}` in place of the viewer's simple stage
-      list, and handling `failed` (agree with Marko)
+- [x] Backend (done in 2a): `GET /memories/{id}` adds `stage_detail` from `job/status.json` and the
+      `failed` status; stage results are copied into `jobs` when a run ends
+- [ ] Frontend: stage list and stopping on `failed`: Marko's PR #11 covers most of this;
+      check it against real API responses
 - [ ] Demo: watch the 7 stages run and finish as `ready` (the 3D scene appears) or `failed`
 
 ### Phase 4: Slice 3, globe (3–4 days)
