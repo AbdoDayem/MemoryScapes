@@ -4,7 +4,7 @@ MemoryScapes turns a video (or panoramas) plus an audio recording into a walkabl
 
 ## Status
 
-Partly a scaffold: most API endpoints still return `501`. In the workers, the visual stages (`ingest`, `poses`, `splat`) and the audio stages (`separate`, `localize`, `soundscape`) are implemented and tested; `publish` writes the manifest for private memories (no privacy pass yet). The API serves `GET /memories/:id` and its files; the web viewer (`/memories/[id]`) renders the splat with Spark and plays the audio. Follow the build phases in `docs/ARCHITECTURE.md` § 9. The MVP is video → COLMAP → gsplat → web viewer, with private memories only. Stage data contracts are in `services/workers/README.md`.
+Partly a scaffold: most API endpoints still return `501`. In the workers, the visual stages (`ingest`, `poses`, `splat`) and the audio stages (`separate`, `localize`, `soundscape`) are implemented and tested; `publish` writes the manifest for private memories (no privacy pass yet). The API serves `GET /memories/:id` and its files; the web viewer (`/memories/[id]`) renders the splat with Spark and plays the audio. `python -m memoryscapes_workers.run` runs the whole pipeline on one uploaded video (each stage in its own process), and the debugger's upload page drives it. Follow the build phases in `docs/ARCHITECTURE.md` § 9. The MVP is video → COLMAP → gsplat → web viewer, with private memories only. Stage data contracts are in `services/workers/README.md`.
 
 ## Layout
 
@@ -15,7 +15,8 @@ Partly a scaffold: most API endpoints still return `501`. In the workers, the vi
 | `services/workers` | Processing pipeline. DAG in `memoryscapes_workers/pipeline.py`, one module per stage in `stages/`, SATIE adapter in `providers/soundscape.py`. |
 | `packages/manifest` | Memory manifest contract: `memory.schema.json` (source of truth) + `index.ts` (TS mirror). |
 | `infra` | `docker-compose.yml` (Postgres/PostGIS, Redis, MinIO) and `db/init.sql` (schema). |
-| `docs` | `ARCHITECTURE.md` and a styled `architecture.html`. |
+| `tools/debugger` | Local Vite + React + three.js UI for inspecting stage outputs and checking that the audio and splat pipelines agree. Standalone package (not an npm workspace). |
+| `docs` | `ARCHITECTURE.md`, a styled `architecture.html`, and `SPLAT_OUTPUTS.md` (what the poses/splat stages must write). |
 
 ## Commands
 
@@ -29,12 +30,16 @@ cd services/workers && .venv/Scripts/python -m pytest                           
 cd services/workers && pip install -e ".[audio,visual,satie]"   # model backends + SATIE MCP client
 cd services/workers && memoryscapes-worker demo                  # synthetic video -> ingest -> poses -> splat (local)
 cd services/workers && memoryscapes-worker run demo --stages publish   # manifest; then the API + dev:web -> /memories/demo
+cd services/workers && .venv/Scripts/python examples/run_example.py   # audio example memories -> examples/out/
+cd tools/debugger && npm install && npm run dev                      # debugger on :5178, with video upload (MEMORYSCAPES_DATA=<root> for other data)
+cd tools/debugger && npm test                                        # debugger parser/check/API tests
 ```
 
 ## Rules for working in this repo
 
 - **The manifest is the contract** between pipeline and viewer. If you change its shape, update `memory.schema.json` and `index.ts` together, and bump `version` semantics carefully, because old memories must keep loading.
-- **One coordinate frame.** Splat, audio source positions and geolocation share one metric world frame (`coord_frame.units = "meters"`). Don't introduce unscaled or per-asset frames.
+- **One coordinate frame.** Splat, audio source positions and geolocation share one metric world frame (`coord_frame.units = "meters"`). Don't introduce unscaled or per-asset frames. The debugger's alignment check enforces this between the splat and the poses.
+- **Stage outputs are a contract with other teams.** The splat side is specified in `docs/SPLAT_OUTPUTS.md`. When you change what a stage writes, update that doc or `services/workers/README.md`, plus `tools/debugger/src/lib/types.ts` and its checks.
 - **Stages are idempotent** and write only under `{memory_id}/{stage}/` through `ctx.storage` (`StageContext.key`). A stage must be safe to re-run.
 - **Model backends are injected.** Stages take tagger/separator/detector/provider arguments, and `backends.py` builds the real ones from env. Tests use fakes and synthetic scenes with known ground truth; keep it that way so tests never need torch or network.
 - **SATIE stays behind `SoundscapeProvider`** (`providers/soundscape.py`, MCP via `providers/mcp_transport.py`). Don't call it from anywhere else. Use `SOUNDSCAPE_PROVIDER=stub` for local work. Store raw provider output so audio can be re-rendered.

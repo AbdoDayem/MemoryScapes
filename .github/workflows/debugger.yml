@@ -1,0 +1,29 @@
+name: debugger
+
+on:
+  push:
+    branches: [main]
+    paths: ["tools/debugger/**", ".github/workflows/debugger.yml"]
+  pull_request:
+    paths: ["tools/debugger/**", ".github/workflows/debugger.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/debugger
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/debugger/package-lock.json
+
+      - run: npm ci
+      - name: Unit tests (parsers, checks, data server)
+        run: npm test
+      - name: Type-check and build
+        run: npm run build

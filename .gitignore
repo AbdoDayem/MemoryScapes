@@ -33,3 +33,6 @@ Thumbs.db
 
 # TypeScript incremental build info
 *.tsbuildinfo
+
+# Model checkouts and weights (AudioSep etc.)
+.models/

@@ -42,3 +42,14 @@ def test_gcc_phat_recovers_fractional_delay():
         tau, peak = gcc_phat(x, frac_delay(x, delay), SR, max_tau=0.001)
         assert abs(tau - delay) < 1.5e-5
         assert peak > 0.5
+
+
+def test_clap_cosine_scores_are_multilabel():
+    """Two sounds clearly present must both score high: classes don't compete."""
+    from memoryscapes_workers.audio.tagging import cosine_scores
+
+    cos = np.array([[0.27, 0.24, 0.17, 0.03, -0.2]])
+    s = cosine_scores(cos)[0]
+    assert s[0] > 0.85 and s[1] > 0.75  # both present
+    assert 0.3 < s[2] < 0.6  # borderline
+    assert s[3] == 0 and s[4] == 0  # absent
