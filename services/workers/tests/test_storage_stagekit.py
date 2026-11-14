@@ -90,3 +90,31 @@ def test_missing_upstream_raises(ctx):
         run_stage(ctx, "b", version="1", config=Cfg(), upstream=["a"], body=_body([]))
     with pytest.raises(StageError, match="No uploaded files"):
         run_stage(ctx, "ingest", version="1", config=Cfg(), upstream=["upload"], body=_body([]))
+
+
+def test_local_storage_retries_files_windows_reports_in_use(tmp_path, monkeypatch):
+    """On Windows, replacing or deleting a file another process has open raises
+    PermissionError for a moment (e.g. the API streaming it); writes retry."""
+    from pathlib import Path
+
+    from memoryscapes_workers import storage as st
+
+    s = LocalStorage(tmp_path / "root")
+    s.write_bytes("m/a/x.bin", b"old")
+    real_replace = Path.replace
+    calls = {"n": 0}
+
+    def flaky_replace(self, target):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise PermissionError("[WinError 32] The process cannot access the file")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(st.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    s.write_bytes("m/a/x.bin", b"new")
+    assert s.read_bytes("m/a/x.bin") == b"new" and calls["n"] == 3
+
+    monkeypatch.setattr(Path, "replace", lambda self, target: (_ for _ in ()).throw(PermissionError("locked")))
+    with pytest.raises(PermissionError):
+        s.write_bytes("m/a/x.bin", b"newer")  # gives up after the retries

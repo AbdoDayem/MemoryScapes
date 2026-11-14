@@ -77,7 +77,7 @@ class TrainConfig(BaseModel):
     # the sky. "auto": when the SfM points reach unbounded_ratio x the camera spread. Then
     # a sky dome is added (the sky has no SfM points) and gaussians aren't pruned for
     # their 3D size, which is relative to the camera spread and would delete everything
-    # distant (cleanup still drops oversized blobs, with distance-aware limits).
+    # distant; they're pruned by their size on screen instead.
     unbounded: Literal["auto", "on", "off"] = "auto"
     unbounded_ratio: float = 5.0
     sky_dome_points: int = 4000
@@ -304,7 +304,10 @@ class GaussianTrainer:
                 refine_start_iter=cfg.refine_start_iter, refine_stop_iter=cfg.steps // 2,
                 refine_every=cfg.refine_every,
                 reset_every=cfg.reset_every or min(3000, max(cfg.steps // 3, 500)),
-                prune_scale3d=1e6 if unbounded else 0.1)
+                # Open scenes: prune by size on screen (> 15% of the image) instead of
+                # in metres, which keeps far buildings and still kills huge floaters.
+                prune_scale3d=1e6 if unbounded else 0.1,
+                refine_scale2d_stop_iter=cfg.steps if unbounded else 0)
             state = strategy.initialize_state(scene_scale=scene_scale)
         strategy.check_sanity(params, optimizers)
 
