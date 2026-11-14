@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "examples"))
 
 from memoryscapes_workers.context import StageContext  # noqa: E402
 from memoryscapes_workers.storage import LocalStorage  # noqa: E402

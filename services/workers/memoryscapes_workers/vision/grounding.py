@@ -84,11 +84,15 @@ def lift_box(
     min_points: int = 5,
     depth_percentile: float = 35.0,
     shrink: float = 0.15,
+    depth_band: float = 0.2,
 ) -> np.ndarray | None:
-    """3D point for a detection: the box centre, pushed out to the depth of the scene
-    points that project inside the (slightly shrunk) box.
+    """3D point for a detection: the centroid of the scene points that project inside
+    the (slightly shrunk) box and sit at the object's depth.
 
-    A low depth percentile prefers the object over the background showing through the box.
+    The object's depth is a low percentile of the in-box depths, which prefers the
+    object over background showing through the box; points within `depth_band` of it
+    (relative) are the object's visible surface. Using their centroid instead of the
+    box centre keeps boxes cut off by the frame edge from pointing past the object.
     Returns None when too few scene points land in the box to trust the depth.
     """
     w2c = np.linalg.inv(camera.c2w)
@@ -105,6 +109,11 @@ def lift_box(
     if inside.sum() < min_points:
         return None
     depth = float(np.percentile(z[inside], depth_percentile))
-    ray = np.linalg.inv(camera.K) @ np.array([(x0 + x1) / 2, (y0 + y1) / 2, 1.0])
-    p_cam = ray / ray[2] * depth
+    surface = inside & (np.abs(z - depth) <= depth_band * depth)
+    p_cam = pc[surface].mean(axis=0)
     return camera.c2w[:3, :3] @ p_cam + camera.c2w[:3, 3]
+
+
+def touches_border(box: tuple[float, float, float, float], camera: Camera, margin_px: float = 2.0) -> bool:
+    x0, y0, x1, y1 = box
+    return x0 <= margin_px or y0 <= margin_px or x1 >= camera.width - margin_px or y1 >= camera.height - margin_px

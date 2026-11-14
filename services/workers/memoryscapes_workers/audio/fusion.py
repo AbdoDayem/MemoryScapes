@@ -55,6 +55,9 @@ class FusionConfig:
     min_confidence: float = 0.25
     min_av_views: int = 2  # a single-view detection is too easy to get wrong
     doa_spread_scale_m: float = 2.0
+    # When the camera saw the source somewhere and DOA alone points elsewhere, DOA is
+    # usually the one fooled (leakage, reverb, wrong mic spacing): scale its confidence.
+    conflict_penalty: float = 0.4
 
 
 @dataclass
@@ -70,6 +73,7 @@ def fuse(
     doa_scorer: Callable[[np.ndarray], np.ndarray] | None,
     doa: DoaEstimate | None,
     cfg: FusionConfig = FusionConfig(),
+    agree_radius_m: float = 2.0,
 ) -> Placement:
     total = sum(c.weight for c in clusters)
     av = [c for c in clusters if c.count >= cfg.min_av_views]
@@ -93,6 +97,8 @@ def fuse(
 
     if doa is not None:
         conf = doa.score / (1.0 + doa.spread_m / cfg.doa_spread_scale_m)
+        if av and all(np.linalg.norm(doa.position - c.centre) > agree_radius_m for c in av):
+            conf *= cfg.conflict_penalty
         if conf >= cfg.min_confidence:
             return Placement(doa.position, doa.spread_m, round(conf, 4), "doa")
 

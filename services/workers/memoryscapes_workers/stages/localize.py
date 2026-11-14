@@ -30,7 +30,7 @@ from memoryscapes_workers.audio.vocabulary import BY_LABEL
 from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.models import Camera, LocalizedSource, MicInfo, SceneBounds, StemInfo, StemsIndex
 from memoryscapes_workers.storage import read_json, read_npy, read_wav, write_json
-from memoryscapes_workers.vision.grounding import Detection, Detector, lift_box
+from memoryscapes_workers.vision.grounding import Detection, Detector, lift_box, touches_border
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,8 @@ class LocalizationConfig:
     min_frame_activity: float = 0.3
     det_threshold: float = 0.3
     cluster_radius_m: float = 1.5
+    # Lifting a box gets less precise with distance, so far sources cluster more loosely.
+    cluster_radius_rel: float = 0.2
     default_stereo_spacing_m: float = 0.12  # phone top/bottom mics; override via meta.json
     fusion: FusionConfig = FusionConfig()
 
@@ -78,9 +80,12 @@ def run(ctx: StageContext, detector: Detector | None = _DEFAULT, cfg: Localizati
 
         # 1. audio-visual candidates
         clusters = []
+        radius = cfg.cluster_radius_m
         if detector is not None and cls.detect_prompt:
-            pts, weights = _av_candidates(storage, stem, cameras, points, cls.detect_prompt, activity, detector, detection_cache, cfg)
-            clusters = cluster_candidates(pts, weights, cfg.cluster_radius_m)
+            pts, weights, dists = _av_candidates(storage, stem, cameras, points, cls.detect_prompt, activity, detector, detection_cache, cfg)
+            if len(dists):
+                radius = max(cfg.cluster_radius_m, cfg.cluster_radius_rel * float(np.median(dists)))
+            clusters = cluster_candidates(pts, weights, radius)
 
         # 2. stereo DOA
         doa_scorer, doa_est = None, None
@@ -91,7 +96,7 @@ def run(ctx: StageContext, detector: Detector | None = _DEFAULT, cfg: Localizati
                 doa_scorer = lambda p, b=bearings: doa_mod.bearing_likelihood(p, b, path)  # noqa: E731
                 doa_est = doa_mod.triangulate(candidates, doa_scorer(candidates))
 
-        placement = fuse(clusters, doa_scorer, doa_est, cfg.fusion)
+        placement = fuse(clusters, doa_scorer, doa_est, cfg.fusion, agree_radius_m=max(2.0, 1.5 * radius))
         if placement.position is None:
             sources.append(_diffuse(stem))
             continue
@@ -120,7 +125,7 @@ def run(ctx: StageContext, detector: Detector | None = _DEFAULT, cfg: Localizati
 def _av_candidates(storage, stem: StemInfo, cameras, points, prompt, activity, detector, cache, cfg):
     ranked = sorted(cameras, key=lambda c: activity(c.t), reverse=True)
     frames = [c for c in ranked if activity(c.t) >= cfg.min_frame_activity and c.image_key][: cfg.max_frames]
-    pts, weights = [], []
+    pts, weights, dists = [], [], []
     for cam in frames:
         cache_key = (cam.frame_id, prompt)
         if cache_key not in cache:
@@ -131,10 +136,13 @@ def _av_candidates(storage, stem: StemInfo, cameras, points, prompt, activity, d
             p = lift_box(det.box, cam, points)
             if p is not None:
                 pts.append(p)
-                weights.append(det.score * activity(cam.t))
+                # a box cut off by the frame edge only shows part of the object
+                truncated = 0.5 if touches_border(det.box, cam) else 1.0
+                weights.append(det.score * activity(cam.t) * truncated)
+                dists.append(float(np.linalg.norm(p - cam.position)))
     if not pts:
-        return np.zeros((0, 3)), np.zeros(0)
-    return np.stack(pts), np.array(weights)
+        return np.zeros((0, 3)), np.zeros(0), np.zeros(0)
+    return np.stack(pts), np.array(weights), np.array(dists)
 
 
 def _mean_distance(pos: np.ndarray, cameras: list[Camera], activity) -> float:

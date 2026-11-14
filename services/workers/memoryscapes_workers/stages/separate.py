@@ -25,7 +25,7 @@ import numpy as np
 
 from memoryscapes_workers.audio import dsp
 from memoryscapes_workers.audio.separation import Separator
-from memoryscapes_workers.audio.tagging import Tagger
+from memoryscapes_workers.audio.tagging import Tagger, TagResult
 from memoryscapes_workers.audio.vocabulary import VOCABULARY, SoundClass
 from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.models import MicInfo, StemInfo, StemsIndex
@@ -34,19 +34,64 @@ from memoryscapes_workers.storage import read_json, read_wav, write_json, write_
 
 @dataclass(frozen=True)
 class SeparationConfig:
-    tag_threshold: float = 0.2  # min per-window score for a class to count as present
+    # A class is present if it clears tag_threshold in at least two windows, or
+    # tag_strong in one (a single loud event, like one dog bark). One noisy window
+    # just above the threshold is not enough.
+    tag_threshold: float = 0.2
+    tag_strong: float = 0.35
     max_stems: int = 8
     min_stem_dbfs: float = -55.0
+    # A separator asked for a sound that isn't there returns leakage, which looks like
+    # the other stems combined. Real stems stay well below this even with heavy leakage.
+    max_redundancy: float = 0.9
     nfft: int = 2048
     hop: int = 512
     mask_power: float = 2.0
     activity_hop_s: float = 0.25
 
 
-def select_classes(clip_scores: dict[str, float], cfg: SeparationConfig) -> list[SoundClass]:
-    present = [c for c in VOCABULARY if clip_scores.get(c.label, 0.0) >= cfg.tag_threshold and not c.diffuse]
-    present.sort(key=lambda c: clip_scores[c.label], reverse=True)
+def is_present(window_scores: np.ndarray, cfg: SeparationConfig) -> bool:
+    s = np.sort(np.asarray(window_scores, float))[::-1]
+    if len(s) == 0:
+        return False
+    if len(s) == 1:
+        return bool(s[0] >= cfg.tag_threshold)
+    return bool(s[0] >= cfg.tag_strong or s[1] >= cfg.tag_threshold)
+
+
+def select_classes(tags: TagResult, cfg: SeparationConfig) -> list[SoundClass]:
+    clip = tags.clip_scores()
+    present = [c for c in VOCABULARY if not c.diffuse and c.label in tags.scores and is_present(tags.scores[c.label], cfg)]
+    present.sort(key=lambda c: clip[c.label], reverse=True)
     return present[: cfg.max_stems]
+
+
+def find_redundant(stem_mags: np.ndarray, tag_scores: list[float], max_similarity: float) -> dict[int, float]:
+    """Stems whose log spectrogram is nearly the same as the sum of the other kept stems.
+
+    Similarity is Pearson correlation (mean removed), so two unrelated dense,
+    noise-like stems (water and traffic, say) don't look alike just for being positive.
+    Checked weakest-tag first, so of two look-alike stems the better-supported one stays.
+    Returns {stem index: similarity} for the stems to drop.
+    """
+    k = len(stem_mags)
+    if k < 2:
+        return {}
+    logs = np.log1p(100.0 * stem_mags).reshape(k, -1)
+    kept = set(range(k))
+    out: dict[int, float] = {}
+    for i in sorted(range(k), key=lambda j: tag_scores[j]):
+        others = [j for j in kept if j != i]
+        if not others:
+            break
+        a = logs[i] - logs[i].mean()
+        b = np.log1p(100.0 * stem_mags[others].sum(axis=0)).ravel()
+        b = b - b.mean()
+        sim = float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+        if sim >= max_similarity:
+            out[i] = sim
+            kept.discard(i)
+    return out
 
 
 def run(
@@ -68,7 +113,7 @@ def run(
 
     tags = tagger.tag(mono, sr, VOCABULARY)
     clip_scores = tags.clip_scores()
-    classes = select_classes(clip_scores, cfg)
+    classes = select_classes(tags, cfg)
 
     estimates = separator.separate(mono, sr, classes) if classes else {}
     classes = [c for c in classes if c.label in estimates]
@@ -80,14 +125,22 @@ def run(
         stem_mags = np.zeros((0, *mix_mag.shape))
     masks, residual = dsp.consistent_masks(mix_mag, stem_mags, cfg.mask_power)
     stems, ambient = dsp.apply_masks(audio, masks, residual, cfg.nfft, cfg.hop)
+    redundant = find_redundant(masks * mix_mag[None], [clip_scores[c.label] for c in classes], cfg.max_redundancy)
 
     window_times: list[float] | None = None
     infos: list[StemInfo] = []
+    dropped: list[dict] = []
     for i, c in enumerate(classes):
         stem = stems[i]
         level = dsp.dbfs(stem)
-        if level < cfg.min_stem_dbfs:
+        reason = None
+        if i in redundant:
+            reason = f"looks like the other stems combined (similarity {redundant[i]:.2f}): likely a false tag"
+        elif level < cfg.min_stem_dbfs:
+            reason = f"too quiet ({level:.1f} dBFS)"
+        if reason:
             ambient = ambient + stem
+            dropped.append({"label": c.label, "reason": reason})
             continue
         times, env = dsp.activity_envelope(dsp.to_mono(stem), sr, hop_s=cfg.activity_hop_s)
         window_times = window_times or times.tolist()
@@ -121,6 +174,7 @@ def run(
         stems=infos,
         ambient_key=ambient_key,
         tags={k: round(v, 4) for k, v in clip_scores.items()},
+        dropped=dropped,
     )
     write_json(storage, ctx.key("separate", "stems.json"), index.to_json())
     return index

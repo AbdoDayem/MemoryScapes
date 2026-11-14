@@ -30,6 +30,25 @@ pip install -e ".[audio,visual,satie]"    # model backends and the SATIE MCP cli
 pytest
 ```
 
+## Example memories
+
+`examples/` has five procedural memories with known ground truth. Each one has synthesized sounds (birdsong, fountain, traffic, speech, music, a dog, bells, waves, wind), a camera path, a point cloud, and imperfect stand-in models: separation leakage, tag noise, and missed or false detections.
+
+| Scenario | What it exercises |
+|---|---|
+| `park_walk` | Walking and panning past birds, a fountain and a road. The normal case. |
+| `street_cafe` | Close speech, a music speaker, traffic, a dog; light reverb |
+| `courtyard_static` | The camera never moves: bells above the frame can't be ranged and are left in the ambient bed |
+| `beach_mono` | Mono mic: vision only, with diffuse wind and crowd |
+| `hard_mode` | Heavy leakage, half the detections missed, false boxes, a false tag, reverb, noise, wrong mic spacing in the metadata |
+
+```bash
+.venv/Scripts/python examples/run_example.py            # all; writes examples/out/
+.venv/Scripts/python examples/run_example.py park_walk  # one
+```
+
+Each run writes the full stage output, so you can listen to `ingest/audio.wav` and `separate/stems/*.wav`. It also writes `report.md` (per-sound error, method, confidence, verdict) and `map.svg` (a top-down view of the true and estimated positions). The script exits non-zero if anything is placed confidently in the wrong spot. `tests/test_examples.py` runs the same scenes as regression tests, and CI (`.github/workflows/workers.yml`) runs both on every PR.
+
 AudioSep isn't on PyPI. Clone [Audio-AGI/AudioSep](https://github.com/Audio-AGI/AudioSep), download its checkpoint, put the repo on `PYTHONPATH`, and set `AUDIOSEP_CONFIG` and `AUDIOSEP_CHECKPOINT`.
 
 ## Audio stages: data contracts

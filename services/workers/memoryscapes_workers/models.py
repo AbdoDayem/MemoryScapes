@@ -103,6 +103,7 @@ class StemsIndex:
     stems: list[StemInfo]
     ambient_key: str
     tags: dict[str, float] = field(default_factory=dict)  # label -> max clip score
+    dropped: list[dict[str, str]] = field(default_factory=list)  # [{"label", "reason"}]
 
     def to_json(self) -> dict[str, Any]:
         d = asdict(self)
@@ -120,6 +121,7 @@ class StemsIndex:
             stems=[StemInfo(**s) for s in d["stems"]],
             ambient_key=d["ambient_key"],
             tags=d.get("tags", {}),
+            dropped=d.get("dropped", []),
         )
 
     def activity_at(self, stem: StemInfo, t: float) -> float:

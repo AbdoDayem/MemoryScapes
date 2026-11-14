@@ -17,6 +17,9 @@ data/
 # SATIE local authoring state
 .satie/
 
+# Example run outputs (regenerate with services/workers/examples/run_example.py)
+services/workers/examples/out/
+
 # Pipeline outputs
 *.ply
 *.spz
