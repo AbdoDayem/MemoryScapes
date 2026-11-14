@@ -155,6 +155,9 @@ def main(argv: list[str] | None = None) -> int:
                        help="run all stages in this process (debugging; see the OpenMP note)")
     p_run.add_argument("--result-file", type=Path, help=argparse.SUPPRESS)  # for run_isolated
 
+    p_models = sub.add_parser("setup-models", help="install the audio stages' models (~5.6 GB)")
+    p_models.add_argument("--check", action="store_true", help="also load and run each model once")
+
     p_syn = sub.add_parser("synth", help="render the synthetic test video")
     p_syn.add_argument("out_dir", type=Path)
     p_syn.add_argument("--seconds", type=float, default=10.0)
@@ -165,8 +168,19 @@ def main(argv: list[str] | None = None) -> int:
     p_demo.add_argument("--trainer", default="points")
 
     args = ap.parse_args(argv)
+    from memoryscapes_workers import envfile
+
+    loaded = envfile.load()  # <repo>/.env, services/workers/.env; real env vars win
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    if loaded:
+        logging.debug("loaded from .env: %s", ", ".join(sorted(loaded)))  # names only
+
+    if args.cmd == "setup-models":
+        from memoryscapes_workers.devtools.models import setup
+
+        print(json.dumps(setup(check=args.check), indent=2))
+        return 0
 
     if args.cmd == "synth":
         from memoryscapes_workers.devtools.synthetic import SyntheticSpec, generate

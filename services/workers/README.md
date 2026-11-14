@@ -53,6 +53,31 @@ tried on real footage. The splat stage writes the files in `docs/SPLAT_OUTPUTS.m
 changed (`--force` re-runs them). `splat.trainer=auto` (the default) uses gsplat on an NVIDIA
 GPU, otherwise the PyTorch rasterizer on Apple Silicon, otherwise `points`.
 
+## Windows + NVIDIA: a complete memory with spatial sound
+
+This is the deploy path. From `services/workers`, in PowerShell:
+
+1. Install Python 3.12, an NVIDIA driver, and ffmpeg on `PATH` (for example `winget install Gyan.FFmpeg`).
+2. Install CUDA torch **first**: PyPI's torch wheels for Windows are CPU-only. Pick the CUDA build for your driver at https://pytorch.org/get-started/locally/, for example:
+   `python -m venv .venv; .venv\Scripts\pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126`
+3. `.venv\Scripts\pip install -e ".[dev,visual,audio]"`. The torch from step 2 is kept.
+4. Get gsplat's CUDA kernels: a prebuilt wheel matching your torch and CUDA (see https://docs.gsplat.studio). Without one, gsplat compiles on first use, which needs the CUDA toolkit and Visual Studio Build Tools.
+5. `.venv\Scripts\memoryscapes-worker setup-models --check`. This takes about 5.6 GB once.
+6. Build a memory:
+   ```
+   .venv\Scripts\memoryscapes-worker import mem_1 C:\path\to\clip.mp4
+   .venv\Scripts\memoryscapes-worker run mem_1 --until publish
+   ```
+   That runs ingest → poses → splat (`trainer=auto` picks gsplat on CUDA) → separate → localize → soundscape → publish.
+7. Serve and view it: `cd ..\api; uvicorn app.main:app --port 8000`, then `npm run dev:web` from the repo root. Open http://localhost:3000/memories/mem_1 and press **Start sound**. Placed sources pan and get louder as you walk.
+
+Settings go in `<repo>\.env`, which is git-ignored and loaded by the CLI; real environment variables win. For example `SOUNDSCAPE_PROVIDER=satie`, `SATIE_MCP_TOKEN=…`, `STORAGE_ROOT=D:\memoryscapes`. Keep `SATIE_MAX_CENTS=0` and `SATIE_ALLOW_GENERATION=false` unless the team agrees otherwise: SATIE should only arrange the recorded sounds.
+
+Capture tips that matter most:
+- One continuous take. Edited videos are split into shots, and only the shots that join up are kept.
+- Walk slowly; don't stand still or only turn in place.
+- Don't film mostly sky or open water.
+
 ## Example memories
 
 `examples/` has five procedural memories with known ground truth. Each one has synthesized sounds (birdsong, fountain, traffic, speech, music, a dog, bells, waves, wind), a camera path, a point cloud, and imperfect stand-in models: separation leakage, tag noise, and missed or false detections.
@@ -93,13 +118,17 @@ hard_mode's splat is scaled by 0.5 afterwards for the debugger's alignment check
 
 ## Models
 
-Each runs on the CPU, so there's no GPU needed. Weights download on first use, except AudioSep's.
+`memoryscapes-worker setup-models` installs them all (~5.6 GB), the same on Windows, macOS
+and Linux. Add `--check` to load each one and run it once. Each runs on the CPU, so no GPU
+is needed. CUDA is used when present.
 
-| Model | Install |
-|---|---|
-| CLAP, Grounding DINO | `transformers` (Hugging Face cache) |
-| HTDemucs | `demucs` |
-| AudioSep | Not on PyPI. Clone [Audio-AGI/AudioSep](https://github.com/Audio-AGI/AudioSep) to `<repo>/.models/AudioSep`, and put `audiosep_base_4M_steps.ckpt` and `music_speech_audioset_epoch_15_esc_89.98.pt` from the [AudioSep Space](https://huggingface.co/spaces/Audio-AGI/AudioSep/tree/main/checkpoint) in its `checkpoint/` folder (3.6 GB). Set `AUDIOSEP_DIR` if it lives elsewhere. |
+| Model | Used for | Where it goes |
+|---|---|---|
+| CLAP `laion/clap-htsat-unfused` | tagging which sounds are present | Hugging Face cache |
+| AudioSep, pinned commit, plus 2 checkpoints (3.6 GB, SHA-256 checked) | separating each tagged sound | `<repo>/.models/AudioSep` (git-ignored; `AUDIOSEP_DIR` overrides) |
+| RoBERTa `roberta-base` | AudioSep's text encoder | Hugging Face cache |
+| HTDemucs | separating speech | torch / Hugging Face cache |
+| Grounding DINO tiny | finding a sound's source in the frames (localization) | Hugging Face cache |
 
 Two compatibility shims in `audio/separation.py` let AudioSep run on current torch and transformers without editing its code. One allowlists the NumPy types its checkpoints pickle, so they load under `weights_only=True` instead of turning that safety off. The other drops a stale `position_ids` key from its CLAP checkpoint.
 

@@ -108,7 +108,10 @@ def lift_box(
     inside = (uv[:, 0] >= x0 + dx) & (uv[:, 0] <= x1 - dx) & (uv[:, 1] >= y0 + dy) & (uv[:, 1] <= y1 - dy)
     if inside.sum() < min_points:
         return None
-    depth = float(np.percentile(z[inside], depth_percentile))
+    # "nearest": an actual point's depth, so the band below always holds at least one
+    # point. Interpolating can land between two far-apart points (sparse far scenes)
+    # and leave the band empty.
+    depth = float(np.percentile(z[inside], depth_percentile, method="nearest"))
     surface = inside & (np.abs(z - depth) <= depth_band * depth)
     p_cam = pc[surface].mean(axis=0)
     return camera.c2w[:3, :3] @ p_cam + camera.c2w[:3, 3]
