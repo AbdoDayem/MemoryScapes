@@ -47,7 +47,7 @@ pytest
 .venv/Scripts/python examples/run_example.py park_walk  # one
 ```
 
-Each run writes the full stage output, so you can listen to `ingest/audio.wav` and `separate/stems/*.wav`. It also writes `report.md` (per-sound error, method, confidence, verdict) and `map.svg` (a top-down view of the true and estimated positions). The script exits non-zero if anything is placed confidently in the wrong spot. `tests/test_examples.py` runs the same scenes as regression tests, and CI (`.github/workflows/workers.yml`) runs both on every PR.
+Each run writes the full stage output, so you can listen to `ingest/audio.wav` and `separate/stems/*.wav`. It also writes stand-ins for the splat pipeline per [docs/SPLAT_OUTPUTS.md](../../docs/SPLAT_OUTPUTS.md): rendered PNG keyframes, a 3DGS `point_cloud.ply`, training metrics, splat renders, and `debug/truth.json`. That's everything the debugger (`tools/debugger`) needs. `hard_mode`'s splat is deliberately at half scale, so the debugger has an alignment failure to show. It also writes `report.md` (per-sound error, method, confidence, verdict) and `map.svg` (a top-down view of the true and estimated positions). The script exits non-zero if anything is placed confidently in the wrong spot. `tests/test_examples.py` runs the same scenes as regression tests, and CI (`.github/workflows/workers.yml`) runs both on every PR.
 
 AudioSep isn't on PyPI. Clone [Audio-AGI/AudioSep](https://github.com/Audio-AGI/AudioSep), download its checkpoint, put the repo on `PYTHONPATH`, and set `AUDIOSEP_CONFIG` and `AUDIOSEP_CHECKPOINT`.
 

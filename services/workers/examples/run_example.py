@@ -32,7 +32,7 @@ def run_scenario(name: str, root: Path) -> tuple[Rendered, dict, list[Row], dict
     scenario = SCENARIOS[name]
     ctx = StageContext(memory_id=name, storage=LocalStorage(root))
     r = render(scenario)
-    write_inputs(ctx, r)
+    write_inputs(ctx, r, images=True, splat=True)
     timings = {}
     t0 = time.perf_counter()
     separate.run(ctx, tagger=OracleTagger(r), separator=OracleSeparator(r))

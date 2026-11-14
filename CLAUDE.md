@@ -15,7 +15,8 @@ Mostly a scaffold: API endpoints return `501`. In the workers, the audio stages 
 | `services/workers` | Processing pipeline. DAG in `memoryscapes_workers/pipeline.py`, one module per stage in `stages/`, SATIE adapter in `providers/soundscape.py`. |
 | `packages/manifest` | Memory manifest contract: `memory.schema.json` (source of truth) + `index.ts` (TS mirror). |
 | `infra` | `docker-compose.yml` (Postgres/PostGIS, Redis, MinIO) and `db/init.sql` (schema). |
-| `docs` | `ARCHITECTURE.md` and a styled `architecture.html`. |
+| `tools/debugger` | Local Vite + React + three.js UI for inspecting stage outputs and checking that the audio and splat pipelines agree. Standalone package (not an npm workspace). |
+| `docs` | `ARCHITECTURE.md`, a styled `architecture.html`, and `SPLAT_OUTPUTS.md` (what the poses/splat stages must write). |
 
 ## Commands
 
@@ -27,12 +28,16 @@ cd services/api && pip install -e ".[dev]" && uvicorn app.main:app --reload
 cd services/workers && python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev]"   # core + tests
 cd services/workers && .venv/Scripts/python -m pytest                                            # worker tests
 cd services/workers && pip install -e ".[audio,visual,satie]"   # model backends + SATIE MCP client
+cd services/workers && .venv/Scripts/python examples/run_example.py   # example memories -> examples/out/
+cd tools/debugger && npm install && npm run dev                      # debugger on :5178 (MEMORYSCAPES_DATA=<root> for other data)
+cd tools/debugger && npm test                                        # debugger parser/check tests
 ```
 
 ## Rules for working in this repo
 
 - **The manifest is the contract** between pipeline and viewer. If you change its shape, update `memory.schema.json` and `index.ts` together, and bump `version` semantics carefully, because old memories must keep loading.
-- **One coordinate frame.** Splat, audio source positions and geolocation share one metric world frame (`coord_frame.units = "meters"`). Don't introduce unscaled or per-asset frames.
+- **One coordinate frame.** Splat, audio source positions and geolocation share one metric world frame (`coord_frame.units = "meters"`). Don't introduce unscaled or per-asset frames. The debugger's alignment check enforces this between the splat and the poses.
+- **Stage outputs are a contract with other teams.** The splat side is specified in `docs/SPLAT_OUTPUTS.md`. When you change what a stage writes, update that doc or `services/workers/README.md`, plus `tools/debugger/src/lib/types.ts` and its checks.
 - **Stages are idempotent** and write only under `{memory_id}/{stage}/` through `ctx.storage` (`StageContext.key`). A stage must be safe to re-run.
 - **Model backends are injected.** Stages take tagger/separator/detector/provider arguments, and `backends.py` builds the real ones from env. Tests use fakes and synthetic scenes with known ground truth; keep it that way so tests never need torch or network.
 - **SATIE stays behind `SoundscapeProvider`** (`providers/soundscape.py`, MCP via `providers/mcp_transport.py`). Don't call it from anywhere else. Use `SOUNDSCAPE_PROVIDER=stub` for local work. Store raw provider output so audio can be re-rendered.
