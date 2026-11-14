@@ -95,8 +95,13 @@ def run_stage(
     config: BaseModel,
     upstream: list[str],
     body: Callable[[StageIO], dict[str, Any]],
+    extra_inputs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run ``body`` as an idempotent stage and return its summary dict."""
+    """Run ``body`` as an idempotent stage and return its summary dict.
+
+    ``extra_inputs`` joins the fingerprint, for inputs without a stage marker (e.g. a
+    digest of an output written by a stage that doesn't use run_stage).
+    """
     upstream_fps: dict[str, str] = {}
     for name in upstream:
         if name == UPLOAD_PREFIX:
@@ -110,10 +115,11 @@ def run_stage(
             raise StageError(stage, f"Upstream stage {name!r} has not completed.")
         upstream_fps[name] = marker["fingerprint"]
 
-    fingerprint = _fingerprint(
-        {"stage": stage, "version": version, "config": config.model_dump(mode="json"),
-         "upstream": upstream_fps}
-    )
+    payload = {"stage": stage, "version": version, "config": config.model_dump(mode="json"),
+               "upstream": upstream_fps}
+    if extra_inputs:  # only when given, so existing fingerprints stay valid
+        payload["extra"] = extra_inputs
+    fingerprint = _fingerprint(payload)
     existing = read_marker(ctx, stage)
     if existing and existing.get("fingerprint") == fingerprint and not ctx.force:
         log.info("[%s] up to date (%s), skipping", stage, fingerprint)

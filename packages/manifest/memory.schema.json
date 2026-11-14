@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "MemoryManifest",
+  "description": "Relative URLs (e.g. \"splat/lods/lod0.spz\") are relative to the memory's asset base, which the API returns next to the manifest.",
   "type": "object",
   "required": ["id", "version", "coord_frame", "splat", "audio", "meta"],
   "properties": {
@@ -36,7 +37,9 @@
       "properties": {
         "spawn": { "type": "object" },
         "walkable_bounds": { "type": "object" },
-        "original_path": { "type": "string" }
+        "original_path": { "type": "string" },
+        "floor_y": { "type": "number", "description": "Ground height in the world frame" },
+        "eye_height_m": { "type": "number", "description": "Camera height above the ground during capture" }
       }
     },
     "audio": {
