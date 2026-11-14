@@ -20,8 +20,10 @@ import argparse
 import dataclasses
 import json
 import logging
-import multiprocessing
+import subprocess
 import sys
+import tempfile
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -61,43 +63,36 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
-def _stage_process(memory_id: str, stage: str, config: dict, force: bool,
-                   work_root: Path | None, log_level: int, conn) -> None:
-    logging.basicConfig(level=log_level, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
-    try:
-        ctx = StageContext(memory_id=memory_id, storage=get_storage(), config=config, force=force,
-                           work_root=work_root)
-        result = run_local(ctx, [stage])[stage]
-        conn.send(("ok", json.loads(json.dumps(result, default=_jsonable))))
-    except StageError as err:
-        conn.send(("stage_error", err.stage, err.message, err.hint))
-    except Exception as err:  # noqa: BLE001 - reported by the parent
-        conn.send(("error", f"{type(err).__name__}: {err}"))
-        raise
-
-
 def run_isolated(memory_id: str, stages: list[str], config: dict, force: bool = False,
                  work_root: Path | None = None) -> dict[str, Any]:
-    """Run stages in DAG order, each in a fresh process. Storage comes from the environment."""
-    mp = multiprocessing.get_context("spawn")
+    """Run stages in DAG order, each in a fresh ``python -m memoryscapes_workers`` process.
+
+    A plain subprocess (not multiprocessing) so it behaves the same with console-script
+    launchers on Windows. Storage comes from the environment; logs stream to stderr.
+    """
     results: dict[str, Any] = {}
-    for stage in [s for s in topological_order() if s in stages]:
-        recv, send = mp.Pipe(duplex=False)
-        proc = mp.Process(target=_stage_process, name=f"stage-{stage}",
-                          args=(memory_id, stage, config, force, work_root,
-                                logging.getLogger().level, send))
-        proc.start()
-        send.close()
-        try:
-            msg = recv.recv()
-        except EOFError:
-            msg = ("error", "the stage process exited without a result")
-        proc.join()
-        if msg[0] == "stage_error":
-            raise StageError(*msg[1:])
-        if msg[0] == "error":
-            raise RuntimeError(f"stage {stage!r} failed (exit code {proc.exitcode}): {msg[1]}")
-        results[stage] = msg[1]
+    with tempfile.TemporaryDirectory(prefix="ms-run-") as tmp:
+        cfg_path, out_path = Path(tmp) / "config.json", Path(tmp) / "result.json"
+        cfg_path.write_text(json.dumps(config))
+        for stage in [s for s in topological_order() if s in stages]:
+            out_path.unlink(missing_ok=True)
+            cmd = [sys.executable, "-m", "memoryscapes_workers"]
+            if logging.getLogger().level <= logging.DEBUG:
+                cmd.append("-v")
+            cmd += ["run", memory_id, "--stages", stage, "--in-process", "--config", str(cfg_path),
+                    "--result-file", str(out_path)]
+            if force:
+                cmd.append("--force")
+            if work_root is not None:
+                cmd += ["--work-root", str(work_root)]
+            code = subprocess.run(cmd, check=False).returncode
+            out = json.loads(out_path.read_text()) if out_path.exists() else {}
+            if "stage_error" in out:
+                raise StageError(**out["stage_error"])
+            if "result" not in out:
+                raise RuntimeError(f"stage {stage!r} failed (exit code {code}): "
+                                   f"{out.get('error', 'the process exited without a result')}")
+            results[stage] = out["result"]
     return results
 
 
@@ -115,6 +110,25 @@ def _stages(args) -> list[str]:
         return [s.strip() for s in args.stages.split(",") if s.strip()]
     target = args.until or VISUAL_STAGES[-1]
     return [*ancestors(target), target]
+
+
+def _run_for_parent(args, storage: Storage, config: dict) -> int:
+    """Child side of run_isolated: run in-process and report through --result-file."""
+    ctx = StageContext(memory_id=args.memory_id, storage=storage, config=config,
+                       force=args.force, work_root=args.work_root)
+    try:
+        out: dict[str, Any] = {"result": run_local(ctx, _stages(args))}
+        code = 0
+    except StageError as err:
+        out, code = {"stage_error": {"stage": err.stage, "message": err.message, "hint": err.hint}}, 2
+    except Exception as err:  # noqa: BLE001 - reported by the parent
+        traceback.print_exc()
+        out, code = {"error": f"{type(err).__name__}: {err}"}, 1
+    if "result" in out:
+        out["result"] = next(iter(out["result"].values()), None) if len(out["result"]) == 1 \
+            else out["result"]
+    args.result_file.write_text(json.dumps(out, default=_jsonable))
+    return code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -139,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--work-root", type=Path)
     p_run.add_argument("--in-process", action="store_true",
                        help="run all stages in this process (debugging; see the OpenMP note)")
+    p_run.add_argument("--result-file", type=Path, help=argparse.SUPPRESS)  # for run_isolated
 
     p_syn = sub.add_parser("synth", help="render the synthetic test video")
     p_syn.add_argument("out_dir", type=Path)
@@ -167,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "run":
             config = build_config(args.config, args.set)
+            if args.result_file:
+                return _run_for_parent(args, storage, config)
             if args.in_process:
                 ctx = StageContext(memory_id=args.memory_id, storage=storage, config=config,
                                    force=args.force, work_root=args.work_root)
