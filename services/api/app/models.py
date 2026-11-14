@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -41,6 +42,8 @@ class UpdateMemoryRequest(BaseModel):
     visibility: Visibility | None = None
     lat: float | None = None
     lon: float | None = None
+    # "video_gps" when the client used suggested_location; otherwise a pin ("user_pin").
+    location_source: Literal["video_gps", "user_pin"] | None = None
 
 
 class MemorySummary(BaseModel):
@@ -50,6 +53,21 @@ class MemorySummary(BaseModel):
     visibility: Visibility
     thumbnail_url: str | None
     captured_at: datetime | None
+
+
+class GlobeMemory(BaseModel):
+    id: str
+    title: str | None
+    lat: float
+    lon: float
+    status: MemoryStatus
+    captured_at: datetime | None
+    created_at: datetime
+    thumbnail_url: str | None
+
+
+class GlobeResponse(BaseModel):
+    memories: list[GlobeMemory]
 
 
 class UploadResult(BaseModel):

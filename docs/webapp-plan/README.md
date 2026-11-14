@@ -32,15 +32,15 @@ definitions are in `backend.md`, and `frontend.md` links to them instead of repe
 
 ## Goal
 
-1. A user opens `/upload`, picks a phone video (and optionally a separate audio recording),
-   and uploads it.
-2. They land on `/memories/{id}` (the viewer page) and see the pipeline's 7 stages run.
-   When it's done, the same page shows the 3D scene.
-3. They give the memory a title and location, and it appears as a pin on the `/` globe.
-   Clicking the pin opens `/memories/{id}`.
+1. The homepage `/` is a 3D globe (night Earth) showing every memory as a glowing point.
+2. **+ New memory** opens an upload panel over the globe: pick a phone video (and optionally
+   a separate audio recording), give it a title, click the globe where it was filmed, upload.
+3. The memory appears on the globe right away and processes. Clicking it opens a preview
+   card; **Enter memory** opens `/memories/{id}` (the viewer), which shows the pipeline's
+   stages and then the 3D scene.
 
-**Out of scope:** the 3D viewer itself (Marko's work; we only add the progress panel and
-details form to its page, agreed with him); the pipeline stages; real login; public sharing.
+**Out of scope:** the 3D viewer itself (Marko's work); the pipeline stages (the workers
+team's; splat training runs on GPU machines, not tested on laptops); real login; public sharing.
 
 ## Decisions
 
@@ -96,13 +96,15 @@ parts and ends with something you can demo.
 - [x] Database tests
 
 ### Phase 2: Slice 1, upload a video (3–4 days)
-Split in two PRs: **2a backend**, then **2b upload page** once its design is agreed.
-- [x] 2a: add writes (`writer`, `write_bytes`, `delete_prefix`) to the existing `app/storage.py`
+Split in PRs: **2a** backend for uploads; **2b** the globe homepage with the upload panel
+(this pulls Phase 4's globe forward, since the globe is the homepage).
+- [x] 2a: add writes (`writer`, `write_bytes`, `delete_prefix`) to the existing `app/storage.py` (PR #14)
 - [x] 2a: `app/pipeline.py`, which starts the workers' runner and records the result
 - [x] 2a: `POST /memories`, `PUT …/upload/{name}`, `POST …/process`, `GET /memories`; `GET /memories/{id}` reads the database row too
-- [ ] Design the upload page (layout, steps, errors, hand-off to the viewer)
-- [ ] 2b: upload form with checks, capture tips and a progress bar
-- [ ] Demo: upload a phone video and see its files appear in `storage/{id}/`
+- [x] Design: globe homepage + upload panel (`frontend.md`)
+- [ ] 2b-backend: `GET /globe`, `PATCH /memories/{id}`
+- [ ] 2b-frontend (after Marko's PR #11): globe, preview card, "My memories", upload panel
+- [ ] Demo: upload a phone video, place it on the globe, see it process, enter it
 
 ### Phase 3: Slice 2, progress (about 2 days)
 - [x] Backend (done in 2a): `GET /memories/{id}` adds `stage_detail` from `job/status.json` and the
@@ -111,10 +113,9 @@ Split in two PRs: **2a backend**, then **2b upload page** once its design is agr
       check it against real API responses
 - [ ] Demo: watch the 7 stages run and finish as `ready` (the 3D scene appears) or `failed`
 
-### Phase 4: Slice 3, globe (3–4 days)
-- [ ] Backend: `PATCH /memories/{id}`, `GET /globe`
-- [ ] Frontend: details form, globe with pins
-- [ ] Demo: set a location and see the pin; click through to the memory
+### Phase 4: Globe polish
+The globe itself moved into 2b. What's left: thumbnails or preview loops on pins, and (with
+public memories) server-side clustering.
 
 ### Phase 5: Later
 Postgres + PostGIS; the S3 version of the storage interface, with MinIO locally, R2 when
