@@ -145,7 +145,7 @@ class LocalizedSource:
     position: list[float] | None  # world metres; None = diffuse
     spread_m: float | None
     confidence: float
-    method: str  # "av" | "doa" | "av+doa" | "diffuse"
+    method: str  # "av" | "doa" | "av+doa" | "diffuse" | "narration" (speech heard everywhere)
     level_dbfs: float
     level_db_at_1m: float | None  # level corrected for mean mic distance (for SATIE `spl`)
     trajectory: str | None = None

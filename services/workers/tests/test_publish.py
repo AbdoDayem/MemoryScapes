@@ -97,6 +97,16 @@ def test_republishes_when_only_the_soundscape_changes(ctx):
     assert manifest(ctx)["audio"]["sources"][0]["gain"] == 0.5
 
 
+def test_narration_is_a_valid_method(ctx):
+    """Unplaced speech (localize) is "narration"; publish used to reject it against the schema."""
+    fake_upstream(ctx)
+    scene = read_json(ctx.storage, ctx.key("soundscape", "scene.json"))
+    scene["sources"][1].update(label="speech", method="narration")
+    write_json(ctx.storage, ctx.key("soundscape", "scene.json"), scene)
+    publish.run(ctx)
+    assert manifest(ctx)["audio"]["sources"][1]["method"] == "narration"
+
+
 @pytest.mark.parametrize("visibility", ["unlisted", "public"])
 def test_refuses_non_private_until_the_privacy_pass_exists(ctx, visibility):
     fake_upstream(ctx)
