@@ -27,6 +27,10 @@ UP = np.array([0.0, 1.0, 0.0])
 # Handheld capture is a walk: average speed and the range we accept from other cues.
 WALK_SPEED_MPS = 1.2
 PLAUSIBLE_SPEED_MPS = (0.2, 2.5)
+# An eye-height scale this unsure (few floor points, a wavering height) must also imply an
+# ordinary walk: a Tampere underpass came out at 0.18 confidence and ~2.4 m/s, twice a walk.
+UNSURE_CONFIDENCE = 0.3
+UNSURE_SPEED_MPS = (0.5, 2.0)
 CV_TO_GL = np.diag([1.0, -1.0, -1.0])  # OpenCV camera axes -> OpenGL/three.js camera axes
 
 
@@ -214,7 +218,8 @@ def estimate_alignment(
     elif fixed_scale is None and walk is not None:
         walk_scale, path_units, span = walk
         speed = path_units * scale / span
-        if not (PLAUSIBLE_SPEED_MPS[0] <= speed <= PLAUSIBLE_SPEED_MPS[1]):
+        lo, hi = UNSURE_SPEED_MPS if confidence < UNSURE_CONFIDENCE else PLAUSIBLE_SPEED_MPS
+        if not (lo <= speed <= hi):
             note = (f"{scale_method} scale implied {speed:.2f} m/s over {span:.0f} s; "
                     f"assumed a {WALK_SPEED_MPS} m/s walk instead")
             scale, confidence, scale_method = walk_scale, 0.3, "walking_speed"

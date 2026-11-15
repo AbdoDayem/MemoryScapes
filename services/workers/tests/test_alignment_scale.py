@@ -49,6 +49,32 @@ def test_jumps_between_shots_are_not_walking():
     assert a.scale_method == "walking_speed" and abs(a.scale * within / span - 1.2) < 1e-6
 
 
+def _brisk(unsure):
+    """About 2.2 m/s by eye height: fast, but inside the 2.5 m/s limit. Unsure: a sparse
+    floor among points that aren't on it, and a camera height that sways, as in a Tampere
+    underpass whose eye-height scale came out at 0.18 confidence and ~2.4 m/s."""
+    c, r, p, t = scene(path_units=17.0, floor_below=0.6)  # 2.5 m/unit -> 42.5 m in 20 s
+    if unsure:
+        rng = np.random.default_rng(2)
+        c = c.copy()
+        c[:, 1] += 0.4 * np.sin(np.linspace(0, 2 * np.pi, len(c)))
+        below = np.stack([rng.uniform(-3, 3, 1500), rng.uniform(-3, -0.1, 1500), rng.uniform(-20, 2, 1500)], -1)
+        p = np.vstack([p[:100], p[800:], below])
+    return estimate_alignment(c, r, p, times=t), c, t
+
+
+def test_a_confident_eye_height_may_imply_a_brisk_walk():
+    a, c, t = _brisk(unsure=False)
+    assert a.scale_method == "eye_height" and a.scale_confidence > 0.5
+    assert 2.0 < speed(a, c, t) < 2.5
+
+
+def test_an_unsure_eye_height_must_imply_an_ordinary_walk():
+    a, c, t = _brisk(unsure=True)
+    assert a.scale_method == "walking_speed" and "assumed a 1.2 m/s walk" in a.scale_note
+    assert abs(speed(a, c, t) - 1.2) < 1e-6
+
+
 def test_without_times_nothing_changes():
     c, r, p, _ = scene(path_units=0.4, floor_below=40.0)
     assert estimate_alignment(c, r, p).scale_method == "eye_height"
