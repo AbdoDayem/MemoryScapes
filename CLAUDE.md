@@ -17,7 +17,7 @@ Partly a scaffold: most API endpoints still return `501`. In the workers, the vi
 | `infra` | `docker-compose.yml` (Postgres/PostGIS, Redis, MinIO) and `db/init.sql` (schema). |
 | `tools/debugger` | Local Vite + React + three.js UI for inspecting stage outputs and checking that the audio and splat pipelines agree. Standalone package (not an npm workspace). |
 | `deploy` | Running the site on the Windows PC: `setup.py` (venvs, CUDA torch, models, web build, `.env`) and `serve.py` (API + web, restarted on failure), with `windows/*.cmd` launchers. Guide: `docs/DEPLOY_WINDOWS.md`. |
-| `docs` | `ARCHITECTURE.md`, a styled `architecture.html`, `SPLAT_OUTPUTS.md` (what the poses/splat stages must write), `DEPLOY_WINDOWS.md`, and `SPATIAL_VIDEO.md` (iPhone spatial video → scale, right-eye views, stereo depth: status and next steps). |
+| `docs` | `ARCHITECTURE.md`, a styled `architecture.html`, `SPLAT_OUTPUTS.md` (what the poses/splat stages must write), `DEPLOY_WINDOWS.md`, `SPATIAL_VIDEO.md` (iPhone spatial video → scale, right-eye views, stereo depth: status and next steps), and `RENDER_SPEED.md` (viewer frame rate: quality tiers, measurements, next steps). |
 
 ## Commands
 
@@ -39,6 +39,7 @@ cd services/workers && memoryscapes-worker run demo --stages publish   # manifes
 cd services/workers && .venv/Scripts/python examples/run_example.py   # audio example memories -> examples/out/
 cd tools/debugger && npm install && npm run dev                      # debugger on :5178, with video upload (MEMORYSCAPES_DATA=<root> for other data)
 cd tools/debugger && npm test                                        # debugger parser/check/API tests
+cd services/workers && .venv/Scripts/python examples/render_benchmark.py   # 1.5M-gaussian scene -> /memories/render_bench?perf (docs/RENDER_SPEED.md)
 ```
 
 ## Rules for working in this repo

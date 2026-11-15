@@ -4,7 +4,9 @@
  * Walk through one memory: the splat (three.js + Spark) and its soundscape.
  *
  * - Loads the manifest from the API; while the pipeline runs, shows stage progress.
- * - Splat LODs load coarsest first, each replacing the previous one when ready.
+ * - Splat LODs load coarsest first, each replacing the previous one when ready, up to the
+ *   most detailed one the device takes (phones stop below lod0). That one loads as a Spark
+ *   LoD tree, and frame times pick the render quality (see renderQuality.ts).
  * - Walk with WASD/arrows (Shift: faster, Q/E: down/up), drag to look. Movement stays
  *   inside navigation.walkable_bounds: the box and corridor around the capture path,
  *   where the splat is reliable.
@@ -25,7 +27,9 @@ import { SatieAudioEngine } from "@/components/audio/SatieAudioEngine";
 import { getMemory, type MemoryResponse } from "@/lib/api";
 
 import { assetResolver } from "./assets";
+import { createGpuTimer } from "./gpuTimer";
 import { asWalkable, clampToWalkable, samplePath, type CapturePath } from "./navigation";
+import { deviceClass, parseOverrides, pickLods, QualityGovernor, START_TIER, TIERS } from "./renderQuality";
 import { failureSummary, pollAction, stageRows } from "./status";
 
 type Phase = "loading" | "processing" | "ready" | "failed" | "error";
@@ -41,6 +45,7 @@ export default function MemoryViewer({ memoryId }: { memoryId: string }) {
   const [memory, setMemory] = useState<MemoryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lodStatus, setLodStatus] = useState("");
+  const [perf, setPerf] = useState("");
   const [audioState, setAudioState] = useState<AudioState>("none");
   const [replay, setReplay] = useState(false);
   const replayRef = useRef(false);
@@ -100,6 +105,7 @@ export default function MemoryViewer({ memoryId }: { memoryId: string }) {
     mountScene(container.current, manifest, assetBase, {
       isDisposed: () => disposed,
       setLodStatus,
+      setPerf,
       replay: () => replayRef.current,
       audio: () => audioRef.current,
       onReady: (t) => resolveThree(t),
@@ -200,6 +206,7 @@ export default function MemoryViewer({ memoryId }: { memoryId: string }) {
           {phase === "ready" && (
             <>
               <div style={{ opacity: 0.8 }}>{lodStatus}</div>
+              {perf && <div style={{ opacity: 0.8, fontVariantNumeric: "tabular-nums" }}>{perf}</div>}
               <div style={{ opacity: 0.6, marginTop: 4 }}>WASD to walk · drag to look · Shift run · Q/E down/up</div>
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <AudioButton state={audioState} onStart={startAudio} />
@@ -258,6 +265,7 @@ interface ThreeHandles {
 interface SceneHooks {
   isDisposed: () => boolean;
   setLodStatus: (s: string) => void;
+  setPerf: (s: string) => void;
   replay: () => boolean;
   audio: () => SatieAudioEngine | null;
   onReady?: (three: ThreeHandles) => void;
@@ -269,13 +277,16 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
   const { SparkRenderer, SplatMesh } = await import("@sparkjsdev/spark");
   const resolve = assetResolver(assetBase, window.location.href);
 
+  const overrides = parseOverrides(window.location.search);
+  const device = deviceClass(navigator);
+
   const renderer = new THREE.WebGLRenderer({ antialias: false });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(el.clientWidth, el.clientHeight);
   el.appendChild(renderer.domElement);
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x101014);
-  scene.add(new SparkRenderer({ renderer }));
+  const spark = new SparkRenderer({ renderer });
+  scene.add(spark);
   const camera = new THREE.PerspectiveCamera(60, el.clientWidth / el.clientHeight, 0.05, 20000);
 
   // ---- spawn
@@ -296,25 +307,62 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
       .catch(() => (path = null));
   }
 
-  // ---- splat LODs: coarsest first, each replaces the previous when loaded
-  const lods = [...manifest.splat.lods].reverse();
+  // ---- render quality: a fixed ?quality tier, or the governor picks one from frame times
   let current: InstanceType<typeof SplatMesh> | null = null;
+  let tier = overrides.tier ?? START_TIER[device];
+  const governor = overrides.tier === undefined ? new QualityGovernor(tier) : null;
+  let measuring = false; // the governor acts once the last LOD is in
+  const applyTier = () => {
+    const t = TIERS[tier];
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, t.maxPixelRatio));
+    spark.lodSplatScale = t.lodSplatScale;
+    spark.lodRenderScale = t.lodRenderScale;
+    spark.maxStdDev = t.maxStdDev;
+    if (current && current.maxSh !== t.maxSh) {
+      current.maxSh = t.maxSh;
+      current.updateGenerator();
+    }
+  };
+  applyTier();
+  // ?perf: devtools handles for timing frames on a real device (frame rate may be vsync-capped)
+  const debug = window as unknown as { memoryscapesViewer?: object };
+  if (overrides.perf) {
+    const setTier = (i: number) => {
+      tier = Math.max(0, Math.min(TIERS.length - 1, i));
+      applyTier();
+    };
+    debug.memoryscapesViewer = { renderer, scene, camera, spark, setTier };
+  }
+
+  // ---- splat LODs: coarsest first, each replaces the previous when loaded; the last
+  // (most detailed for this device) loads as a LoD tree, so Spark draws a splat budget
+  const lods = pickLods(manifest.splat.lods, device, overrides.lod);
   (async () => {
     for (const [i, lod] of lods.entries()) {
       hooks.setLodStatus(`Loading splat ${i + 1}/${lods.length}${lod.count ? ` (${lod.count.toLocaleString()} gaussians)` : ""}…`);
-      const mesh = new SplatMesh({ url: resolve(lod.url) });
+      const isTree = i === lods.length - 1;
+      const mesh = new SplatMesh({ url: resolve(lod.url), lod: isTree });
+      mesh.maxSh = TIERS[tier].maxSh;
       await mesh.initialized;
       if (hooks.isDisposed()) {
         mesh.dispose();
         return;
       }
       scene.add(mesh);
+      // A LoD tree draws nothing until Spark has picked its first splats: keep the previous
+      // LOD on screen until then, or the scene flashes empty.
+      if (isTree && current) await waitFor(() => spark.lodInstances.has(mesh) || hooks.isDisposed(), 10_000);
+      if (hooks.isDisposed()) {
+        mesh.dispose(); // the cleanup already disposed `current`
+        return;
+      }
       if (current) {
         scene.remove(current);
         current.dispose();
       }
       current = mesh;
     }
+    measuring = true;
     const top = lods[lods.length - 1];
     hooks.setLodStatus(`${top?.count ? top.count.toLocaleString() + " gaussians" : "Splat loaded"}`);
   })().catch((err) => hooks.setLodStatus(`Splat failed to load: ${err}`));
@@ -358,8 +406,30 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
   const up = new THREE.Vector3(0, 1, 0);
   let replayStart = 0;
   let wasReplay = false;
-  renderer.setAnimationLoop(() => {
+  let lastFrame = performance.now();
+  let perfFrames = 0;
+  let perfStart = lastFrame;
+  const gpu = overrides.perf ? createGpuTimer(renderer.getContext() as WebGL2RenderingContext) : null;
+  renderer.setAnimationLoop((now: number) => {
     const dt = Math.min(clock.getDelta(), 0.1);
+    const next = governor?.frame(now, now - lastFrame, measuring);
+    lastFrame = now;
+    if (next != null) {
+      tier = next;
+      applyTier();
+    }
+    if (overrides.perf) perfFrames++;
+    if (overrides.perf && now - perfStart >= 1000) {
+      const fps = (perfFrames * 1000) / (now - perfStart);
+      const gpuMs = gpu?.take() ?? NaN;
+      hooks.setPerf(
+        `${fps.toFixed(0)} fps${Number.isFinite(gpuMs) ? ` (GPU ${gpuMs.toFixed(1)} ms)` : ""} · ` +
+          `${TIERS[tier].name}${governor ? " (auto)" : ""} · ` +
+          `${spark.activeSplats.toLocaleString()} splats drawn · ${renderer.getPixelRatio()}x pixels`,
+      );
+      perfFrames = 0;
+      perfStart = now;
+    }
     const audio = hooks.audio();
     if (hooks.replay() && path) {
       if (!wasReplay) replayStart = clock.elapsedTime;
@@ -394,7 +464,9 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
       camera.updateMatrixWorld(); // SATIE reads the listener from the camera's world matrix
       audio.update(camera);
     }
+    gpu?.begin();
     renderer.render(scene, camera);
+    gpu?.end();
   });
 
   hooks.onReady?.({
@@ -424,7 +496,14 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
     el.removeEventListener("pointerup", onUp);
     el.removeEventListener("pointermove", onMove);
     if (current) current.dispose();
+    if (overrides.perf) delete debug.memoryscapesViewer;
     renderer.dispose();
     renderer.domElement.remove();
   };
+}
+
+/** Resolves once `cond()` holds, or after `timeoutMs`. */
+async function waitFor(cond: () => boolean, timeoutMs: number): Promise<void> {
+  const end = performance.now() + timeoutMs;
+  while (!cond() && performance.now() < end) await new Promise((r) => setTimeout(r, 50));
 }
