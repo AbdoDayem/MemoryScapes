@@ -82,13 +82,15 @@ def select_classes(tags: TagResult, cfg: SeparationConfig) -> list[SoundClass]:
     return ([c for c in present if c.kind == "speech"] + [c for c in present if c.kind != "speech"])[: cfg.max_stems]
 
 
-def find_redundant(stem_mags: np.ndarray, tag_scores: list[float], max_similarity: float) -> dict[int, float]:
+def find_redundant(stem_mags: np.ndarray, tag_scores: list, max_similarity: float) -> dict[int, float]:
     """Stems whose log spectrogram is nearly the same as the sum of the other kept stems.
 
     Similarity is Pearson correlation (mean removed), so two unrelated dense,
     noise-like stems (water and traffic, say) don't look alike just for being positive.
     Checked weakest-tag first, so of two look-alike stems the better-supported one stays.
-    Returns {stem index: similarity} for the stems to drop.
+    ``tag_scores`` are sortable per stem: run() passes (clip score, mean window score), so
+    classes tied at a saturated clip score are told apart by how much of the clip they
+    fill. Returns {stem index: similarity} for the stems to drop.
     """
     k = len(stem_mags)
     if k < 2:
@@ -146,7 +148,11 @@ def run(
         stem_mags = np.zeros((0, *mix_mag.shape))
     masks, residual = dsp.consistent_masks(mix_mag, stem_mags, cfg.mask_power)
     stems, ambient = dsp.apply_masks(audio, masks, residual, cfg.nfft, cfg.hop)
-    redundant = find_redundant(masks * mix_mag[None], [clip_scores[c.label] for c in classes], cfg.max_redundancy)
+    # Real recordings saturate several broadband classes at 1.0 (train, construction,
+    # airplane on a station platform); by clip score alone the real train was checked first
+    # and dropped as the others combined. Ties go to the class present for more of the clip.
+    support = [(clip_scores[c.label], float(np.mean(tags.scores[c.label]))) for c in classes]
+    redundant = find_redundant(masks * mix_mag[None], support, cfg.max_redundancy)
 
     window_times: list[float] | None = None
     infos: list[StemInfo] = []

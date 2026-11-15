@@ -89,3 +89,32 @@ def test_cleaning_can_be_turned_off(ctx, monkeypatch):
     ambient, _ = read_wav(ctx.storage, index.ambient_key)
     np.testing.assert_allclose(ambient, read_wav(ctx.storage, ctx.key("ingest", "audio.wav"))[0], atol=2e-3)
     assert index.cleaning == {"wind": "off", "highpass_hz": None}
+
+
+class WindowTagger:
+    """Per-label window scores (several windows), so clip and mean scores can differ."""
+
+    def __init__(self, windows):
+        self.windows = windows
+
+    def tag(self, mono, sr, classes):
+        n = len(next(iter(self.windows.values())))
+        return TagResult(np.linspace(0.5, 3.5, n), {c.label: np.asarray(self.windows.get(c.label, [0.0] * n), float) for c in classes})
+
+
+def test_a_real_sound_tied_with_its_leakage_is_kept(ctx):
+    """A station platform: the train and a false "airplane" both saturate at 1.0. The
+    airplane estimate is the train's own leakage, so one of the two is redundant; by clip
+    score alone the train was checked first and dropped. Ties go to the class that fills
+    more of the clip."""
+    train = tone(220, amp=0.2) + tone(1300, amp=0.05)
+    mix = np.stack([train, train * 0.8])
+    write_wav(ctx.storage, ctx.key("ingest", "audio.wav"), mix, SR)
+    write_json(ctx.storage, ctx.key("ingest", "meta.json"), {"mic": {"channels": 2, "layout": "stereo"}})
+
+    tagger = WindowTagger({"train": [1.0, 0.9, 0.95, 1.0], "airplane": [1.0, 0.1, 0.0, 0.0]})
+    separator = FakeSeparator({"train": train, "airplane": 0.9 * train})
+    index = separate.run(ctx, tagger=tagger, separator=separator)
+
+    assert [s.label for s in index.stems] == ["train"]
+    assert [d["label"] for d in index.dropped] == ["airplane"]
