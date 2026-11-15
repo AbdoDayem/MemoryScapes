@@ -17,7 +17,7 @@ Partly a scaffold: most API endpoints still return `501`. In the workers, the vi
 | `infra` | `docker-compose.yml` (Postgres/PostGIS, Redis, MinIO) and `db/init.sql` (schema). |
 | `tools/debugger` | Local Vite + React + three.js UI for inspecting stage outputs and checking that the audio and splat pipelines agree. Standalone package (not an npm workspace). |
 | `deploy` | Running the site on the Windows PC: `setup.py` (venvs, CUDA torch, models, web build, `.env`) and `serve.py` (API + web, restarted on failure), with `windows/*.cmd` launchers. Guide: `docs/DEPLOY_WINDOWS.md`. |
-| `docs` | `ARCHITECTURE.md`, a styled `architecture.html`, `SPLAT_OUTPUTS.md` (what the poses/splat stages must write), and `DEPLOY_WINDOWS.md`. |
+| `docs` | `ARCHITECTURE.md`, a styled `architecture.html`, `SPLAT_OUTPUTS.md` (what the poses/splat stages must write), `DEPLOY_WINDOWS.md`, and `SPATIAL_VIDEO.md` (iPhone spatial video → scale, right-eye views, stereo depth: status and next steps). |
 
 ## Commands
 

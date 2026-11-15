@@ -169,6 +169,7 @@ def estimate_alignment(
     *,
     eye_height_m: float = 1.5,
     fixed_scale: float | None = None,
+    measured_scale: tuple[float, float, str] | None = None,
     times: np.ndarray | None = None,
     segments: np.ndarray | None = None,
 ) -> Alignment:
@@ -180,6 +181,9 @@ def estimate_alignment(
     scale assumes a WALK_SPEED_MPS walk instead and the level comes from the cameras.
     ``segments`` (one id per camera, e.g. the shot of an edited video) keeps the jumps
     between segments out of the walking-speed estimate.
+    ``measured_scale`` = (scale, confidence, method), e.g. from a stereo pair
+    (visual/stereo.py), replaces the eye-height and walking-speed guesses; an implausible
+    walking pace is only noted. ``fixed_scale`` (set by hand) still wins over it.
     """
     cam_up = _normalize((cam_c2w_rot @ np.array([0.0, -1.0, 0.0])).mean(axis=0))
     plane = fit_ground_plane(points, cam_centers, cam_up)
@@ -201,7 +205,13 @@ def estimate_alignment(
         confidence, ratio, scale_method = 0.15, None, "scene_depth"
 
     walk = _walking_speed_scale(cam_centers, times, segments)
-    if fixed_scale is None and walk is not None:
+    if fixed_scale is None and measured_scale is not None:
+        scale, confidence, scale_method = measured_scale
+        if walk is not None:
+            speed = walk[1] * scale / walk[2]
+            if not (PLAUSIBLE_SPEED_MPS[0] <= speed <= PLAUSIBLE_SPEED_MPS[1]):
+                note = f"{scale_method} scale implies {speed:.2f} m/s over {walk[2]:.0f} s"
+    elif fixed_scale is None and walk is not None:
         walk_scale, path_units, span = walk
         speed = path_units * scale / span
         if not (PLAUSIBLE_SPEED_MPS[0] <= speed <= PLAUSIBLE_SPEED_MPS[1]):

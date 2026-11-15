@@ -20,6 +20,7 @@ normalization), so the trained splat lines up with the trajectory and audio sour
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import time
@@ -55,6 +56,13 @@ class TrainConfig(BaseModel):
     # 0: train on every frame and report PSNR on training frames.
     # N > 0: hold out every Nth frame and report PSNR on those (honest novel-view score).
     holdout_every: int = 0
+    # Spatial video: weight of an L1 loss between the rendered and the stereo inverse depth
+    # (poses/stereo_depth) on the left-eye images. Off until it's tuned on a GPU
+    # (docs/SPATIAL_VIDEO.md); try 0.05-0.5 with --set splat.train.depth_lambda=...
+    depth_lambda: float = 0.0
+    # Spatial video: also train on the right eye (poses/stereo_right.json), one more view per
+    # instant, 17.7 mm to the side.
+    stereo_views: bool = True
     seed: int = 0
     # Learning rates (gsplat simple_trainer defaults); means lr is scaled by scene size.
     means_lr: float = 1.6e-4
@@ -119,6 +127,14 @@ class SceneData:
     sizes: list[tuple[int, int]]  # (width, height)
     points: np.ndarray  # [N, 3]
     colors: np.ndarray  # [N, 3] 0..1
+    # Spatial video: "left"/"right" per image, and the instant (left frame index) each image
+    # shows, so both eyes of a held-out instant stay out of training. Empty: one eye.
+    eyes: list[str] = field(default_factory=list)
+    instants: list[int] = field(default_factory=list)
+    # Stereo inverse-depth maps (poses/stereo_depth, uint16 PNG of 1/m x depth_scale) for
+    # the left-eye images, None for the rest. Empty: no depth supervision.
+    depth_paths: list[Path | None] = field(default_factory=list)
+    depth_scale: float = 10_000.0
 
     @property
     def cam_centers(self) -> np.ndarray:
@@ -135,8 +151,9 @@ class SceneData:
         return float(np.linalg.norm(c - c.mean(axis=0), axis=1).max()) * 1.1
 
 
-def load_scene(poses_dir: Path) -> SceneData:
-    """Load the undistorted, world-frame COLMAP model written by the poses stage.
+def load_scene(poses_dir: Path, stereo_views: bool = True) -> SceneData:
+    """Load the undistorted, world-frame COLMAP model written by the poses stage, plus, for
+    a spatial video, the right eye's cameras (poses/stereo_right.json) as extra views.
 
     Uses the numpy reader, not pycolmap: on macOS pycolmap and torch bundle conflicting
     OpenMP runtimes and cannot share a process.
@@ -152,8 +169,31 @@ def load_scene(poses_dir: Path) -> SceneData:
         Ks.append(cam.K())
         w2cs.append(im.w2c())
         sizes.append((cam.width, cam.height))
+    eyes, instants, depth_paths, depth_scale = [], [], [], 10_000.0
+    right_file = poses_dir / "stereo_right.json"
+    stereo = json.loads(right_file.read_text(encoding="utf-8")) if right_file.exists() else None
+    if stereo and stereo.get("depth"):
+        depth_dir = poses_dir / stereo["depth"]["dir"]
+        depth_scale = float(stereo["depth"]["scale"])
+        depth_paths = [(depth_dir / f"{p.stem}.png") if (depth_dir / f"{p.stem}.png").exists() else None
+                       for p in paths]
+    if stereo_views and stereo:
+        index = {p.stem: i for i, p in enumerate(paths)}
+        eyes, instants = ["left"] * len(paths), list(range(len(paths)))
+        for fr in stereo["frames"]:
+            if fr["left_frame_id"] not in index or not (poses_dir / fr["image"]).exists():
+                continue
+            paths.append(poses_dir / fr["image"])
+            Ks.append(np.array(fr["K"], float))
+            w2cs.append(np.linalg.inv(np.array(fr["c2w"], float)))
+            sizes.append((fr["width"], fr["height"]))
+            eyes.append("right")
+            instants.append(index[fr["left_frame_id"]])
+            if depth_paths:
+                depth_paths.append(None)
     return SceneData(paths, np.array(Ks), np.array(w2cs), sizes,
-                     model.points.astype(np.float32), model.colors.astype(np.float32) / 255.0)
+                     model.points.astype(np.float32), model.colors.astype(np.float32) / 255.0,
+                     eyes=eyes, instants=instants, depth_paths=depth_paths, depth_scale=depth_scale)
 
 
 CURVE_KEYS = ("iteration", "loss", "psnr", "num_gaussians", "elapsed_s")
@@ -252,11 +292,16 @@ class GaussianTrainer:
 
         images, Ks = _load_images(scene, cfg.max_image_side)
         all_idx = np.arange(len(images))
+        # Held out by instant: both eyes of a held-out instant stay out of training, and
+        # scores are on the left eye, so runs with and without the right eye compare.
+        instants = np.array(scene.instants or list(all_idx))
+        is_right = np.array([e == "right" for e in scene.eyes] or [False] * len(all_idx))
         if cfg.holdout_every > 0:
-            test_idx = all_idx[all_idx % cfg.holdout_every == 0]
-            train_idx = all_idx[all_idx % cfg.holdout_every != 0]
+            held = instants % cfg.holdout_every == 0
+            test_idx = all_idx[held & ~is_right]
+            train_idx = all_idx[~held]
         else:
-            train_idx, test_idx = all_idx, all_idx[:: 8]
+            train_idx, test_idx = all_idx, all_idx[~is_right][:: 8]
         gts = [torch.from_numpy(im).to(dev) for im in images]  # uint8 HxWx3
         Ks_t = torch.tensor(Ks, dtype=torch.float32, device=dev)
         viewmats = torch.tensor(scene.w2c, dtype=torch.float32, device=dev)
@@ -311,7 +356,9 @@ class GaussianTrainer:
             state = strategy.initialize_state(scene_scale=scene_scale)
         strategy.check_sanity(params, optimizers)
 
-        def render(i: int, sh_degree: int, bg, scale: float = 1.0):
+        depth_tgts = _load_depths(scene, gts, dev) if cfg.depth_lambda > 0 else [None] * len(gts)
+
+        def render(i: int, sh_degree: int, bg, scale: float = 1.0, depth: bool = False):
             h, w = gts[i].shape[:2]
             K = Ks_t[i : i + 1]
             if scale != 1.0:
@@ -328,6 +375,7 @@ class GaussianTrainer:
                 sh_degree=sh_degree, packed=False,
                 rasterize_mode="antialiased" if cfg.antialiased else "classic",
                 backgrounds=bg[None] if bg is not None else None,
+                render_mode="RGB+ED" if depth else "RGB",
             )
 
         curves: dict[str, list[float]] = {k: [] for k in CURVE_KEYS}
@@ -346,13 +394,20 @@ class GaussianTrainer:
             i = int(order.pop())
             gt = gts[i].float() / 255.0
             bg = torch.rand(3, device=dev) if cfg.random_background else torch.zeros(3, device=dev)
-            renders, _, info = render(i, min(step // cfg.sh_degree_interval, cfg.sh_degree), bg)
-            pred = renders[0]
+            tgt = depth_tgts[i]
+            renders, _, info = render(i, min(step // cfg.sh_degree_interval, cfg.sh_degree), bg,
+                                      depth=tgt is not None)
+            pred = renders[0][..., :3]
             if not mcmc:
                 strategy.step_pre_backward(params, optimizers, state, step, info)
             l1 = F.l1_loss(pred, gt)
             ssim = _ssim(pred.permute(2, 0, 1)[None], gt.permute(2, 0, 1)[None])
             loss = (1 - cfg.ssim_lambda) * l1 + cfg.ssim_lambda * (1 - ssim)
+            if tgt is not None:  # inverse depth: stereo's noise is constant in it
+                valid = tgt > 0
+                if bool(valid.any()):
+                    inv = 1.0 / renders[0][..., 3].clamp_min(0.05)
+                    loss = loss + cfg.depth_lambda * (inv[valid] - tgt[valid]).abs().mean()
             if mcmc:
                 loss = loss + cfg.opacity_reg * torch.sigmoid(params["opacities"]).mean()
                 loss = loss + cfg.scale_reg * torch.exp(params["scales"]).mean()
@@ -379,10 +434,13 @@ class GaussianTrainer:
                 on_checkpoint(step + 1, _to_cloud(params, cfg.antialiased))
 
         psnr = _evaluate(render, gts, test_idx, cfg.sh_degree)
+        depth_err = _depth_error(render, scene, Ks, gts, test_idx, cfg.sh_degree)
         log_curve(cfg.steps, loss_v, psnr)
         if on_render and cfg.render_max_side > 0:
             with torch.no_grad():
                 for i, frame_id in enumerate(scene.frame_ids):
+                    if is_right[i]:  # renders are per poses/cameras.json frame (the left eye)
+                        continue
                     h, w = gts[i].shape[:2]
                     out, _, _ = render(i, cfg.sh_degree, None, min(1.0, cfg.render_max_side / max(h, w)))
                     on_render(frame_id, (out[0].clamp(0, 1) * 255).round().byte().cpu().numpy())
@@ -393,6 +451,11 @@ class GaussianTrainer:
             "steps": cfg.steps, "gaussians": len(cloud),
             "psnr": round(psnr, 2), "psnr_split": "holdout" if cfg.holdout_every > 0 else "train",
             "image_size": list(gts[0].shape[1::-1]), "train_images": int(len(train_idx)),
+            "right_eye_images": int(is_right[train_idx].sum()),
+            "depth_supervised_images": int(sum(depth_tgts[int(i)] is not None for i in train_idx)),
+            # Rendered depth on the scored frames vs the reconstruction's 3D points: median
+            # relative error (geometry, which colour PSNR near the capture path can miss).
+            "depth_error_vs_sfm": None if depth_err is None else round(depth_err, 4),
             "seconds": round(time.time() - t0, 1), "scene_scale": round(scene_scale, 3),
             "unbounded": bool(unbounded),
             "sky_dome_radius_m": None if dome_radius is None else round(dome_radius, 1),
@@ -497,6 +560,48 @@ def _maybe_reset_opacity(strategy, params, optimizers, state, step: int) -> None
         _empty_cache()
 
 
+def _load_depths(scene: SceneData, gts, dev) -> list:
+    """Stereo inverse-depth targets at each training image's size (None where there's none)."""
+    import cv2
+    import torch
+
+    out = []
+    for i, gt in enumerate(gts):
+        path = scene.depth_paths[i] if i < len(scene.depth_paths) else None
+        raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED) if path is not None else None
+        if raw is None:
+            out.append(None)
+            continue
+        h, w = gt.shape[:2]
+        inv = cv2.resize(raw.astype(np.float32) / scene.depth_scale, (w, h), interpolation=cv2.INTER_NEAREST)
+        out.append(torch.from_numpy(inv).to(dev))
+    return out
+
+
+def _depth_error(render, scene: SceneData, Ks, gts, idx, sh_degree: int) -> float | None:
+    import torch
+
+    errs = []
+    with torch.no_grad():
+        for i in idx:
+            i = int(i)
+            h, w = gts[i].shape[:2]
+            xc = (scene.w2c[i][:3, :3] @ scene.points.T + scene.w2c[i][:3, 3:4]).T
+            z = xc[:, 2]
+            uv = (Ks[i] @ xc.T).T[:, :2] / np.maximum(z[:, None], 1e-9)
+            ok = (z > 0.1) & (uv[:, 0] >= 0) & (uv[:, 0] < w - 1) & (uv[:, 1] >= 0) & (uv[:, 1] < h - 1)
+            if ok.sum() < 20:
+                continue
+            renders, alphas, _ = render(i, sh_degree, None, depth=True)
+            d = renders[0][..., 3].cpu().numpy()
+            a = alphas[0][..., 0].cpu().numpy()
+            u, v = np.round(uv[ok]).astype(int).T
+            seen = a[v, u] > 0.5
+            if seen.sum() >= 20:
+                errs.append(np.abs(d[v, u][seen] - z[ok][seen]) / z[ok][seen])
+    return float(np.median(np.concatenate(errs))) if errs else None
+
+
 def _evaluate(render, gts, idx, sh_degree: int) -> float:
     import torch
 
@@ -505,7 +610,7 @@ def _evaluate(render, gts, idx, sh_degree: int) -> float:
         for i in idx:
             renders, _, _ = render(int(i), sh_degree, None)
             gt = gts[int(i)].float() / 255.0
-            mse = torch.mean((renders[0].clamp(0, 1) - gt) ** 2).item()
+            mse = torch.mean((renders[0][..., :3].clamp(0, 1) - gt) ** 2).item()
             psnrs.append(-10 * math.log10(max(mse, 1e-10)))
     return float(np.mean(psnrs)) if psnrs else float("nan")
 

@@ -15,6 +15,9 @@ export interface FileEntry {
 export interface IngestMeta {
   mic: { channels: number; layout: "mono" | "stereo" | "foa"; spacing_m?: number };
   scenario?: string;
+  /** Spatial (stereo) video: both eyes were kept (docs/SPLAT_OUTPUTS.md, ingest/). */
+  stereo?: { baseline_m: number | null; hfov_deg: number | null; left_view: number; right_view: number;
+             right_frames: string } | null;
 }
 
 export interface Camera {

@@ -79,8 +79,10 @@ def scene(tmp_path_factory) -> SceneData:
     keep = rng.random(n) < 0.6
     points = gt["means"][keep] + rng.normal(0, 0.02, (int(keep.sum()), 3))
     colors = np.clip(gt["colors"][keep] + rng.normal(0, 0.1, (int(keep.sum()), 3)), 0, 1)
-    return SceneData(paths, np.repeat(K[None], 10, axis=0), np.array(w2cs), [(W, H)] * 10,
+    data = SceneData(paths, np.repeat(K[None], 10, axis=0), np.array(w2cs), [(W, H)] * 10,
                      points.astype(np.float32), colors.astype(np.float32))
+    data._gt, data._dir = gt_t, out  # for tests that need the true scene (e.g. depth maps)
+    return data
 
 
 def small_config(**over) -> TrainConfig:
@@ -194,3 +196,26 @@ def test_open_scene_adds_a_sky_dome_and_keeps_far_gaussians(scene):
         scene, small_config(steps=5, unbounded="on", sky_dome_points=300))
     assert opened.metrics["unbounded"] is True and opened.metrics["sky_dome_radius_m"] >= 50
     assert opened.metrics["gaussians"] >= bounded.metrics["gaussians"] + 250
+
+
+def test_stereo_depth_supervision_runs_and_scores_geometry(scene):
+    """Depth maps like poses/stereo_depth (uint16 inverse depth): the left-eye images get
+    the depth loss, and the result reports the rendered depth's error against the points."""
+    import dataclasses
+
+    scale = 10_000.0
+    depth_paths = []
+    for i, w2c in enumerate(scene.w2c):
+        out, alpha, _ = rt.rasterization(**scene._gt, viewmats=torch.tensor(w2c, dtype=torch.float32)[None],
+                                         Ks=torch.tensor(scene.Ks[i], dtype=torch.float32)[None],
+                                         width=W, height=H, render_mode="RGB+ED")
+        inv = np.where(alpha[0, ..., 0].numpy() > 0.5, 1.0 / np.maximum(out[0, ..., 3].numpy(), 1e-3), 0.0)
+        path = scene._dir / f"depth_{i:03d}.png"
+        cv2.imwrite(str(path), np.clip(inv * scale, 0, 65535).astype(np.uint16))
+        depth_paths.append(path)
+    with_depth = dataclasses.replace(scene, depth_paths=depth_paths, depth_scale=scale)
+    supervised = GaussianTrainer("torch", device="cpu").train(with_depth, small_config(depth_lambda=1.0, holdout_every=5))
+    plain = GaussianTrainer("torch", device="cpu").train(with_depth, small_config(depth_lambda=0.0, holdout_every=5))
+    assert supervised.metrics["depth_supervised_images"] == 8 and plain.metrics["depth_supervised_images"] == 0
+    assert supervised.metrics["depth_error_vs_sfm"] is not None
+    assert supervised.metrics["depth_error_vs_sfm"] <= plain.metrics["depth_error_vs_sfm"] * 1.05

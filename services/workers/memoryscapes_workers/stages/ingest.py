@@ -8,6 +8,8 @@
 Reads  {memory_id}/upload/        the uploaded video (+ optional separate audio file)
 Writes {memory_id}/ingest/
     frames/frame_00000.jpg ...    upright keyframes, long side <= output_max_side
+    frames_right/frame_00000.jpg  spatial (stereo) video only: the right eye's frame at the
+                                  same instant as each keyframe (keyframes are the left eye)
     audio.wav                     primary audio (separate recording if uploaded,
                                   otherwise the video's track), original rate/channels,
                                   on the video's clock: t=0 is the first video frame
@@ -15,8 +17,9 @@ Writes {memory_id}/ingest/
 
 A separate recording is aligned to the video by cross-correlating it with the video's
 own soundtrack (visual/audio_align.py), then trimmed or padded to the video's length.
-    meta.json                     media info, geo, capture time, keyframe timeline, and
-                                  the "mic" block the audio stages read
+    meta.json                     media info, geo, capture time, keyframe timeline, the
+                                  "mic" block the audio stages read, and "stereo"
+                                  ({baseline_m, hfov_deg, ...} or null)
 
 The audio stages' input contract is in services/workers/README.md.
 """
@@ -32,7 +35,7 @@ from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.stagekit import UPLOAD_PREFIX, StageError, StageIO, run_stage, write_json
 
 STAGE = "ingest"
-VERSION = "5"  # 2: audio contract (audio.wav, meta.json); 3: separate audio aligned;
+VERSION = "6"  # 6: spatial video (both eyes); 2: audio contract (audio.wav, meta.json); 3: separate audio aligned;
 #                4: focal metadata, keyframe floor capped per second; 5: shot detection
 
 
@@ -55,6 +58,9 @@ class IngestConfig(BaseModel):
     min_total_motion: float = 0.25
     jpeg_quality: int = 95
     max_duration_s: float = 600.0
+    # Spatial (stereo) video: keyframes from the left eye, plus the right eye's matching
+    # frames (true scale and extra training views downstream). False: one eye only.
+    stereo: bool = True
 
 
 def run(ctx: StageContext) -> dict:
@@ -168,9 +174,15 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
 
     # ---- candidate analysis (low-res grayscale pass)
     disp_w, disp_h = info.display_size
+    stereo = info.stereo if cfg.stereo else None
+    if stereo is not None and not video.supports_views():
+        warnings.append("This is a spatial (stereo) video, but this ffmpeg can't decode its two views "
+                        "(it needs ffmpeg 7.1 or newer), so only one eye is used.")
+        stereo = None
+    view = stereo.left_view if stereo is not None else None
     sample_fps = min(info.fps, max(2.0, cfg.max_keyframes * cfg.oversample / info.duration_s))
     a_size = video.fit_size(disp_w, disp_h, cfg.analysis_max_side)
-    stats = keyframes.analyze(video.iter_frames(src, a_size, sample_fps, gray=True))
+    stats = keyframes.analyze(video.iter_frames(src, a_size, sample_fps, gray=True, view=view))
     n_candidates = len(stats.sharpness)
     if n_candidates < 3:
         raise StageError(STAGE, "Could not decode enough frames from the video.")
@@ -206,13 +218,21 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
 
     # ---- write selected frames at output resolution (second decode pass)
     o_size = video.fit_size(disp_w, disp_h, cfg.output_max_side)
+    # Focal length in output pixels. A spatial video states its exact field of view; else
+    # from the 35 mm-equivalent focal length (the 43.27 mm diagonal of a 36x24 frame).
+    if stereo is not None and stereo.hfov_deg:
+        focal_px = round(o_size[0] / 2 / math.tan(math.radians(stereo.hfov_deg) / 2), 1)
+    elif info.focal_35mm:
+        focal_px = round(info.focal_35mm * math.hypot(*o_size) / 43.27, 1)
+    else:
+        focal_px = None
     wanted = {idx: k for k, idx in enumerate(sel.indices)}
     frames_dir = out / "frames"
     frames_dir.mkdir()
     frames_meta: list[dict] = []
     params = [cv2.IMWRITE_JPEG_QUALITY, cfg.jpeg_quality]
     last = max(wanted)
-    for i, rgb in enumerate(video.iter_frames(src, o_size, sample_fps)):
+    for i, rgb in enumerate(video.iter_frames(src, o_size, sample_fps, view=view)):
         if i in wanted:
             name = f"frame_{wanted[i]:05d}.jpg"
             video.imwrite_rgb(frames_dir / name, rgb, params)
@@ -227,7 +247,19 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
             break
     if len(frames_meta) != len(sel.indices):
         raise StageError(STAGE, "Frame extraction pass returned fewer frames than analysis.")
-    io.progress(0.95, f"wrote {len(frames_meta)} keyframes")
+    if stereo is not None:  # the right eye at the same instants (same sampling, same indices)
+        right_dir = out / "frames_right"
+        right_dir.mkdir()
+        written = 0
+        for i, rgb in enumerate(video.iter_frames(src, o_size, sample_fps, view=stereo.right_view)):
+            if i in wanted:
+                video.imwrite_rgb(right_dir / f"frame_{wanted[i]:05d}.jpg", rgb, params)
+                written += 1
+            if i >= last:
+                break
+        if written != len(frames_meta):
+            raise StageError(STAGE, "The right eye's view returned fewer frames than the left eye's.")
+    io.progress(0.95, f"wrote {len(frames_meta)} keyframes" + (" (both eyes)" if stereo is not None else ""))
 
     meta = {
         "source": {"file": src.name, "container": info.container,
@@ -244,10 +276,9 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
             "count": len(frames_meta),
             "width": o_size[0],
             "height": o_size[1],
-            # Focal length in keyframe pixels, from the 35 mm equivalent (which refers to
-            # the 43.27 mm diagonal of a 36x24 frame); None when the file doesn't say.
-            "focal_px": (round(info.focal_35mm * math.hypot(*o_size) / 43.27, 1)
-                         if info.focal_35mm else None),
+            # Focal length in keyframe pixels: from a spatial video's field of view, or the
+            # 35 mm equivalent; None when the file doesn't say.
+            "focal_px": focal_px,
             "sample_fps": round(sample_fps, 4),
             "candidates": n_candidates,
             "total_motion": round(sel.total_motion, 4),
@@ -256,6 +287,10 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
         "warnings": warnings,
     }
     meta["mic"] = mic_info(audio_meta)
+    meta["stereo"] = None if stereo is None else {
+        "baseline_m": stereo.baseline_m, "hfov_deg": stereo.hfov_deg,
+        "left_view": stereo.left_view, "right_view": stereo.right_view, "right_frames": "frames_right",
+    }
     write_json(out / "meta.json", meta)
     return {
         "keyframes": len(frames_meta),
@@ -266,5 +301,6 @@ def _ingest(io: StageIO, cfg: IngestConfig) -> dict:
         "warnings": warnings,
         "duration_s": round(info.duration_s, 2),
         "frame_size": list(o_size),
+        "stereo": stereo is not None,
         "_motion_per_keyframe": round(sel.total_motion / max(1, len(frames_meta)), 4),
     }

@@ -289,11 +289,16 @@ def rasterization(
     viewmats: Tensor, Ks: Tensor, width: int, height: int, *, sh_degree: int | None = None,
     backgrounds: Tensor | None = None, near_plane: float = 0.01, far_plane: float = 1e10,
     eps2d: float = 0.3, packed: bool = False, rasterize_mode: str = "classic",
-    tile_size: int = TILE, **_ignored,
+    render_mode: str = "RGB", tile_size: int = TILE, **_ignored,
 ):
-    """Subset of gsplat.rasterization: returns (colors [C,H,W,3], alphas [C,H,W,1], info)."""
+    """Subset of gsplat.rasterization: returns (colors [C,H,W,3], alphas [C,H,W,1], info).
+    render_mode "RGB+ED" adds a 4th channel, the expected depth (camera z composited with
+    the same weights as colour, divided by the accumulated alpha), like gsplat's."""
     if rasterize_mode not in ("classic", "antialiased"):
         raise ValueError(f"Unknown rasterize_mode {rasterize_mode!r}")
+    if render_mode not in ("RGB", "RGB+ED"):
+        raise ValueError(f"Unknown render_mode {render_mode!r}")
+    with_depth = render_mode == "RGB+ED"
     aa = rasterize_mode == "antialiased"
     n_cams = viewmats.shape[0]
     proj = [project(means, quats, scales, viewmats[ci], Ks[ci], width, height, near_plane,
@@ -314,9 +319,14 @@ def rasterization(
         tile_ids, gauss_ids, tw, th = intersect_tiles(means2d[ci], radii[ci], depths, visible,
                                                       width, height, tile_size)
         bg = backgrounds[ci] if backgrounds is not None else rgb.new_zeros(rgb.shape[-1])
+        if with_depth:  # composite z as one more channel (no background depth)
+            rgb = torch.cat([rgb, depths[:, None].to(rgb.dtype)], dim=-1)
+            bg = torch.cat([bg, bg.new_zeros(1)])
         opa = opacities if comp is None else opacities * comp
         img, alpha = rasterize_one(means2d[ci], conics, rgb, opa, tile_ids, gauss_ids, tw,
                                    th, width, height, bg, tile=tile_size)
+        if with_depth:
+            img = torch.cat([img[..., :3], img[..., 3:] / alpha.clamp_min(1e-6)], dim=-1)
         renders.append(img)
         alphas.append(alpha)
     info = {
