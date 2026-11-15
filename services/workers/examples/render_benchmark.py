@@ -6,7 +6,9 @@
 No training: the gaussians are placed on a ground plane, two facades, boxes and a distant
 shell, with sizes like a trained outdoor capture's. The LODs come from the splat stage's
 own `DEFAULT_LODS` and `make_lod`, and a publish manifest is written, so the API and viewer
-load it like a real memory: open /memories/render_bench?perf (docs/RENDER_SPEED.md).
+load it like a real memory: open /memories/render_bench?perf (docs/RENDER_SPEED.md). When
+Spark's build-lod is installed, the streaming LoD tree is built too, as publish does
+(add &stream=0 to the address to compare without it).
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from memoryscapes_workers.visual import splat_io, splat_post
+from memoryscapes_workers.visual import lod_tree, splat_io, splat_post
 from memoryscapes_workers.visual.splat_io import GaussianCloud, logit
 
 C0 = 0.28209479177387814  # SH degree-0 constant
@@ -90,11 +92,22 @@ def main() -> None:
         lods.append({"url": f"splat/lods/lod{i}.spz", "count": len(lod)})
         print(f"lod{i}: {len(lod):,} gaussians, SH{lod.sh_degree}, {size / 1e6:.1f} MB")
 
+    rad = None
+    tool = lod_tree.find_tool()
+    if tool:
+        tree = lod_tree.build(tool, out / "splat" / "lods" / "lod0.spz", out / "publish" / "lod")
+        rad = {"url": f"publish/lod/{tree.header}", "chunks": [f"publish/lod/{c}" for c in tree.chunks]}
+        if tree.count:
+            rad["count"] = tree.count
+        print(f"LoD tree: {len(tree.chunks)} chunks, {tree.bytes / 1e6:.1f} MB")
+    else:
+        print("no LoD tree: build-lod isn't installed (deploy/setup.py)")
+
     manifest = {
         "id": args.id,
         "version": 7,
         "coord_frame": {"units": "meters", "up": "+y"},
-        "splat": {"lods": lods},
+        "splat": {"lods": lods, **({"rad": rad} if rad else {})},
         "navigation": {
             "spawn": {"position": [0, 1.6, 2], "look_at": [0, 1.6, -10]},
             "walkable_bounds": {"type": "aabb", "min": [-5, 0, -38], "max": [5, 4, 4]},

@@ -11,10 +11,13 @@ Steps (docs/DEPLOY_WINDOWS.md):
    An existing .env is never edited; missing deploy values are reported.
 2. Workers: services/workers/.venv with CUDA torch (from PyTorch's index: PyPI's Windows
    torch is CPU-only), the audio/visual/satie extras, and optionally gsplat built from source.
-3. Models: memoryscapes-worker setup-models (AudioSep, CLAP, Grounding DINO, Demucs).
-4. API: services/api/.venv.
-5. Web: npm ci, then the production build with NEXT_PUBLIC_API_URL from .env.
-6. Checks: GPU, splat trainer, SATIE sign-in.
+3. Streaming LoD tool: Spark's build-lod, built with cargo at the Spark version the web app
+   pins, into services/workers/.tools/ (optional: needs Rust; without it memories publish
+   without a streaming LoD tree and the browser builds one itself).
+4. Models: memoryscapes-worker setup-models (AudioSep, CLAP, Grounding DINO, Demucs).
+5. API: services/api/.venv.
+6. Web: npm ci, then the production build with NEXT_PUBLIC_API_URL from .env.
+7. Checks: GPU, splat trainer, build-lod, SATIE sign-in.
 
 Only the standard library: this runs before any virtualenv exists.
 """
@@ -49,6 +52,11 @@ DEPLOY_ENV = {
     "SOUNDSCAPE_PROVIDER": ("satie", "sound is always SATIE's"),
 }
 BUILD_INFO = WEB / ".next" / "memoryscapes-build.json"
+# Spark's build-lod (MIT), for the publish stage's streaming LoD trees (visual/lod_tree.py).
+SPARK_REPO = "https://github.com/sparkjsdev/spark"
+TOOLS = WORKERS / ".tools"
+BUILD_LOD = TOOLS / "bin" / ("build-lod.exe" if WINDOWS else "build-lod")
+BUILD_LOD_STAMP = TOOLS / "build-lod.version"  # the Spark tag it was built from
 
 
 def say(msg: str) -> None:
@@ -156,6 +164,47 @@ def setup_workers(torch_index: str | None, build_gsplat: bool) -> None:
                  f"gsplat=={GSPLAT_VERSION}"], cwd=WORKERS)
 
 
+def spark_tag() -> str | None:
+    """The Spark release the web app pins (the .rad format must match its decoder)."""
+    pkg = json.loads((WEB / "package.json").read_text(encoding="utf-8"))
+    version = pkg.get("dependencies", {}).get("@sparkjsdev/spark", "")
+    return f"v{version}" if re.fullmatch(r"\d+\.\d+\.\d+", version) else None
+
+
+def find_cargo() -> str | None:
+    found = tool("cargo")
+    if found:
+        return found
+    home = Path.home() / ".cargo" / "bin" / ("cargo.exe" if WINDOWS else "cargo")  # rustup, before a new terminal
+    return str(home) if home.exists() else None
+
+
+def setup_lod_tool() -> None:
+    say("Streaming LoD tool (Spark's build-lod, services/workers/.tools)")
+    tag = spark_tag()
+    if tag is None:
+        print("  skipped: apps/web/package.json doesn't pin an exact @sparkjsdev/spark version")
+        return
+    if BUILD_LOD.exists() and BUILD_LOD_STAMP.exists() and BUILD_LOD_STAMP.read_text().strip() == tag:
+        print(f"  build-lod {tag} ok")
+        return
+    cargo = find_cargo()
+    if not cargo:
+        print("  skipped: Rust isn't installed (winget install Rustlang.Rustup, then re-run in a new "
+              "terminal). Memories still publish; the browser then builds the LoD tree itself.")
+        return
+    try:
+        # No GPU feature: it only speeds up optional SH clustering, and adds wgpu.
+        run([cargo, "install", "--git", SPARK_REPO, "--tag", tag, "--no-default-features", "--locked",
+             "--root", TOOLS, "--force", "build-lod"])
+    except subprocess.CalledProcessError:
+        print("  build-lod didn't build (on Windows Rust needs the VS Build Tools' C++ linker). "
+              "Memories still publish without a streaming LoD tree.")
+        return
+    BUILD_LOD_STAMP.write_text(tag + "\n", encoding="utf-8")
+    print(f"  build-lod {tag} installed")
+
+
 def setup_models() -> None:
     say("Models (memoryscapes-worker setup-models; about 6 GB the first time)")
     run([venv_tool(WORKERS, "memoryscapes-worker"), "setup-models"], cwd=WORKERS)
@@ -222,6 +271,8 @@ def checks() -> None:
         signed_in = status.get("signed_in")
     except (ValueError, json.JSONDecodeError):
         signed_in = None
+    print("  build-lod: " + (BUILD_LOD_STAMP.read_text().strip() if BUILD_LOD.exists() and BUILD_LOD_STAMP.exists()
+                             else "not installed (memories publish without a streaming LoD tree)"))
     print("  SATIE: " + ("signed in" if signed_in else
                          "not signed in: run  services\\workers\\.venv\\Scripts\\memoryscapes-worker satie-login"))
 
@@ -232,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--skip-models", action="store_true")
     ap.add_argument("--skip-api", action="store_true")
     ap.add_argument("--skip-web", action="store_true")
+    ap.add_argument("--skip-lod-tool", action="store_true", help="don't build Spark's build-lod")
     ap.add_argument("--torch-index", default=None,
                     help=f"PyTorch wheel index for CUDA torch (default {DEFAULT_TORCH_INDEX} where there's "
                          "an NVIDIA GPU; 'none' keeps whatever torch is installed)")
@@ -250,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
         if index is None:
             index = DEFAULT_TORCH_INDEX if tool("nvidia-smi") else "none"
         setup_workers(None if index == "none" else index, args.build_gsplat)
+    if not args.skip_lod_tool:
+        setup_lod_tool()
     if not args.skip_models:
         setup_models()
     if not args.skip_api:

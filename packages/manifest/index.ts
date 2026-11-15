@@ -41,7 +41,13 @@ export interface MemoryManifest {
     origin_geo?: [number, number, number];
     heading_deg?: number;
   };
-  splat: { lods: { url: string; count?: number }[] };
+  splat: {
+    /** .spz levels, most detailed first */
+    lods: { url: string; count?: number }[];
+    /** The same splat as a Spark LoD tree for streaming (a chunked .rad from Spark's build-lod).
+     * `chunks` are the files the header names, listed so the API stores them with the memory. */
+    rad?: { url: string; chunks: string[]; count?: number };
+  };
   navigation?: {
     spawn?: Record<string, unknown>;
     walkable_bounds?: Record<string, unknown>;

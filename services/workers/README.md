@@ -17,7 +17,7 @@ ingest ─┬─> poses ─┬──────────> splat ────
 | Separation + labeling | `stages/separate.py` | GPU | implemented |
 | Localization | `stages/localize.py` | GPU | implemented |
 | Soundscape (SATIE) | `stages/soundscape.py` + `providers/` | external | implemented |
-| Privacy + publish | `stages/publish.py` | GPU/CPU | stub |
+| Privacy + publish | `stages/publish.py` | CPU | manifest + streaming LoD tree; privacy pass not yet |
 
 ## Setup
 
@@ -100,6 +100,21 @@ tried on real footage. The splat stage writes the files in `docs/SPLAT_OUTPUTS.m
 `metrics.json`, `point_cloud.ply`, `renders/`, `lods/`), which is what `tools/debugger` reads. The visual stages skip themselves when their inputs and config haven't
 changed (`--force` re-runs them). `splat.trainer=auto` (the default) uses gsplat on an NVIDIA
 GPU, otherwise the PyTorch rasterizer on Apple Silicon, otherwise `points`.
+
+### Publish: the streaming LoD tree
+
+When Spark's `build-lod` is installed, publish also turns `splat/lods/lod0.spz` into a chunked LoD tree. It writes `publish/lod/splat-lod.rad` (a small header) plus `splat-lod-<i>.radc` (chunks of 64k splats). The manifest lists all of them under `splat.rad`, so the API stores every chunk with the memory. Desktop viewers stream the tree: a coarse whole scene first, then the detail the view needs. Phones keep loading the smaller `.spz` levels (`docs/RENDER_SPEED.md`).
+
+- **Install:** `deploy/setup.py` builds the tool with cargo (Rust) into `services/workers/.tools/`, at the Spark version `apps/web` pins, so the format matches the viewer.
+- **Finding the tool:** `SPARK_BUILD_LOD` can point at a binary instead, or be `off`.
+- **`publish.lod_tree`:**
+  - `auto` (default): builds with the `quality` method when the tool is found, else skips.
+  - `quality`: Spark's bhatt-lod; about 22 s per 1.5M gaussians on an M1 Pro.
+  - `quick`: tiny-lod; about 2 s, merges less well.
+  - `off`: no tree.
+  - Asking for `quality` or `quick` without the tool is an error. In `auto`, a failed build is reported in the stage summary (`lod_tree_error`), and the memory publishes without a tree.
+- **After installing the tool:** "auto" resolves before the fingerprint, so installing the tool later makes the next run redo publish only: `memoryscapes-worker run mem_1 --stages publish`.
+- **Memories created through the API:** also run `python -m app.memory_files store mem_1` in `services/api`, so the database copy has the tree.
 
 ## Windows + NVIDIA: a complete memory with spatial sound
 

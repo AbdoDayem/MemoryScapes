@@ -6,6 +6,7 @@ import {
   parseOverrides,
   pickLods,
   QualityGovernor,
+  streamsTree,
   TIERS,
   trimmedMean,
   type GovernorOptions,
@@ -58,7 +59,18 @@ test("device class from the user agent", () => {
 test("URL overrides", () => {
   assert.deepEqual(parseOverrides(""), { perf: false });
   assert.deepEqual(parseOverrides("?quality=low&perf&lod=1"), { perf: true, tier: 2, lod: 1 });
-  assert.deepEqual(parseOverrides("?quality=ultra&lod=-1"), { perf: false });
+  assert.deepEqual(parseOverrides("?quality=ultra&lod=-1&stream=yes"), { perf: false });
+  assert.deepEqual(parseOverrides("?stream=0"), { perf: false, stream: false });
+});
+
+test("desktops stream the LoD tree, phones load the smaller .spz levels", () => {
+  const none = parseOverrides("");
+  assert.equal(streamsTree("desktop", true, none), true);
+  assert.equal(streamsTree("mobile", true, none), false);
+  assert.equal(streamsTree("desktop", false, none), false); // memories published before trees
+  assert.equal(streamsTree("mobile", true, parseOverrides("?stream=1")), true);
+  assert.equal(streamsTree("desktop", true, parseOverrides("?stream=0")), false);
+  assert.equal(streamsTree("desktop", true, parseOverrides("?lod=0&stream=1")), false); // ?lod means .spz
 });
 
 test("tiers get cheaper on every lever", () => {

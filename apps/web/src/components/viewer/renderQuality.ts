@@ -13,8 +13,12 @@
  *    budget, smallest splat, SH degree) while frames are slow, and back up when the
  *    viewer keeps up with the display.
  *
- * `?quality=high|medium|low|lowest` fixes a tier, `?lod=N` forces a LOD, and `?perf`
- * shows the frame rate (for measuring on real devices).
+ * When the memory has a LoD tree (.rad, built by the publish stage), desktops stream it
+ * instead (`streamsTree`): no tree to build in the browser, and the coarse whole scene
+ * arrives first.
+ *
+ * `?quality=high|medium|low|lowest` fixes a tier, `?lod=N` forces a .spz LOD, `?stream=1|0`
+ * forces streaming on or off, and `?perf` shows the frame rate (for measuring on devices).
  */
 
 export interface QualityTier {
@@ -78,8 +82,10 @@ export function pickLods<T extends { count?: number }>(lods: readonly T[], devic
 export interface ViewerOverrides {
   /** A fixed tier (the governor is off). */
   tier?: number;
-  /** A forced top LOD index. */
+  /** A forced top LOD index (the .spz path). */
   lod?: number;
+  /** Stream the LoD tree (true) or not (false), whatever the device. */
+  stream?: boolean;
   /** Show the frame-rate readout. */
   perf: boolean;
 }
@@ -91,7 +97,20 @@ export function parseOverrides(search: string): ViewerOverrides {
   if (tier >= 0) out.tier = tier;
   const lod = q.get("lod");
   if (lod !== null && /^\d+$/.test(lod)) out.lod = Number(lod);
+  const stream = q.get("stream");
+  if (stream === "1" || stream === "0") out.stream = stream === "1";
   return out;
+}
+
+/**
+ * Whether to stream the memory's LoD tree rather than load its .spz levels. Desktops only:
+ * a tree is ~1.5x the size of lod0 (interior nodes), and even at the lowest tier Spark
+ * fetched 27 of 36 chunks of a 1.5M-gaussian tree (about 40 MB), against 12 MB for the
+ * levels a phone loads (lod2 + lod1).
+ */
+export function streamsTree(device: DeviceClass, hasTree: boolean, overrides: ViewerOverrides): boolean {
+  if (!hasTree || overrides.lod !== undefined) return false;
+  return overrides.stream ?? device === "desktop";
 }
 
 export interface GovernorOptions {

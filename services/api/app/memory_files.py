@@ -28,6 +28,7 @@ from app.storage import BlobStore, get_store
 
 MANIFEST = "publish/manifest.json"
 _CONTENT_TYPES = {".spz": "application/octet-stream", ".ply": "application/octet-stream",
+                  ".rad": "application/octet-stream", ".radc": "application/octet-stream",
                   ".json": "application/json", ".wav": "audio/wav", ".mp3": "audio/mpeg",
                   ".ogg": "audio/ogg", ".satie": "text/plain; charset=utf-8",
                   ".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
@@ -51,8 +52,13 @@ def referenced_files(manifest: dict[str, Any]) -> dict[str, str]:
         if _is_key(key):
             files.setdefault(key, kind)
 
-    for lod in (manifest.get("splat") or {}).get("lods") or []:
+    splat = manifest.get("splat") or {}
+    for lod in splat.get("lods") or []:
         add(lod.get("url"), "splat")
+    rad = splat.get("rad") or {}  # the streaming LoD tree: its header and every chunk it names
+    add(rad.get("url"), "splat")
+    for chunk in rad.get("chunks") or []:
+        add(chunk, "splat")
     add((manifest.get("navigation") or {}).get("original_path"), "path")
     audio = manifest.get("audio") or {}
     for source in audio.get("sources") or []:

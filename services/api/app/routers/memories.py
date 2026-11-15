@@ -278,7 +278,7 @@ def get_memory_file(memory_id: str, key: str, request: Request) -> Response:
             raise HTTPException(404, "Not found") from None
         if not path.is_file():
             raise HTTPException(404, "Not found")
-        media = "application/octet-stream" if path.suffix == ".spz" else None
+        media = "application/octet-stream" if path.suffix in (".spz", ".rad", ".radc") else None
         return FileResponse(path, media_type=media)
     if not store.exists(full):
         raise HTTPException(404, "Not found")

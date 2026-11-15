@@ -29,6 +29,16 @@
             "required": ["url"],
             "properties": { "url": { "type": "string" }, "count": { "type": "integer" } }
           }
+        },
+        "rad": {
+          "type": "object",
+          "description": "The same splat as a Spark LoD tree for streaming: a chunked .rad header (Spark's build-lod) and the chunk files it names, in the same folder",
+          "required": ["url", "chunks"],
+          "properties": {
+            "url": { "type": "string" },
+            "chunks": { "type": "array", "items": { "type": "string" } },
+            "count": { "type": "integer", "description": "Splats in the tree, interior nodes included" }
+          }
         }
       }
     },
