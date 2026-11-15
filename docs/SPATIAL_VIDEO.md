@@ -74,9 +74,11 @@ Then the splat A/B, with gsplat on the GPU at the default 30,000 steps. Each run
 .venv\Scripts\memoryscapes-worker run spatial --stages splat --force --set splat.train.holdout_every=8
 :: C: both eyes + depth loss; also try 0.05 and 0.5
 .venv\Scripts\memoryscapes-worker run spatial --stages splat --force --set splat.train.holdout_every=8 --set splat.train.depth_lambda=0.2
+:: D: B + per-image exposure compensation (also worth trying on IMG_9660, the normal video)
+.venv\Scripts\memoryscapes-worker run spatial --stages splat --force --set splat.train.holdout_every=8 --set splat.train.exposure_comp=true
 ```
 
-Compare `psnr` (held-out frames) and `depth_error_vs_sfm`. Also walk each result in the viewer, away from the capture path, where better geometry shows most. Then set the defaults (`stereo_views`, `depth_lambda`) from the results.
+Compare `psnr` (held-out frames) and `depth_error_vs_sfm`. Use `psnr_cc` (PSNR after fitting each frame's colour) to compare D with the others: its splat takes the average frame's exposure, which plain PSNR on a differently exposed held-out frame penalizes. D's `exposure_gains` show how much the exposure varied per frame. Also walk each result in the viewer, away from the capture path, where better geometry shows most. Then set the defaults (`stereo_views`, `depth_lambda`, `exposure_comp`) from the results.
 
 ## To improve or fix, in order
 
@@ -91,7 +93,9 @@ Compare `psnr` (held-out frames) and `depth_error_vs_sfm`. Also walk each result
    - a daylight clip, to see how much is noise from the dark;
    - fusing depth across neighbouring frames;
    - a learned stereo matcher (check its licence).
-5. **Exposure.** The right eye is ~3% brighter. Add per-image colour/exposure compensation to the trainer (an affine colour per camera), so the extra views don't teach a colour mismatch.
+5. **Exposure: built, to be measured** (run D above). The right eye is ~3% brighter, and night clips change exposure and white balance from frame to frame. `splat.train.exposure_comp` learns a 3×3 colour matrix + offset per training image, applied to the render before the loss, with the average held at identity. It's off by default until measured.
+   - **On the synthetic test scene:** with frames re-exposed at 0.55–0.95× and tinted, the learned per-frame gains followed the applied ones (correlation 0.98), and held-out PSNR rose 0.9 dB (`psnr_cc` +0.3 dB).
+   - **Without it:** the colour-fitted score got worse the longer it trained, which means the splat was baking the exposure changes in.
 6. **Stronger poses.** SfM runs on the left eye only, and the right cameras are derived from it. Registering both eyes as a rig with a fixed baseline (COLMAP rigs) could tighten the poses and the scale.
 7. **Dense initialisation** from the stereo depth (back-projected points) for bland surfaces SfM misses.
 8. **Debugger.** Show the right-eye frames and the depth maps, and the stereo scale next to the alignment check.

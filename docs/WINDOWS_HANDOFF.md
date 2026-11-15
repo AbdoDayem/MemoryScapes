@@ -16,6 +16,7 @@ This page covers what changed, what to run, what to check, and where to record r
 | #28 | **Faster viewer.** Phones stop at lod1. Spark LoD with quality tiers is chosen from frame times, and there's a `?perf` readout. | [`RENDER_SPEED.md`](RENDER_SPEED.md) |
 | #29 | **Streaming LoD trees.** Publish builds `.rad` trees with Spark's `build-lod` (Rust). Since #36, of lod0 for desktops and of lod1 for phones, so phones stream too. | [`RENDER_SPEED.md`](RENDER_SPEED.md), `services/workers/README.md` § "Publish: the streaming LoD trees" |
 | #33 | **Blur matches the training.** The manifest's `splat.antialiased` picks Spark's blur. Classic training, the default, had been drawn slightly dimmed and thinned. | [`RENDER_SPEED.md`](RENDER_SPEED.md) |
+| #38 | **Exposure compensation (opt-in).** `splat.train.exposure_comp` learns a colour transform per training frame, absorbing auto exposure and white balance. It's off until run D of the A/B (step 6) measures it. The train report gains `psnr_cc` and `exposure_gains`. | [`SPATIAL_VIDEO.md`](SPATIAL_VIDEO.md) § "To improve or fix" 5 |
 
 ## Rules that matter here
 
@@ -145,9 +146,10 @@ Only with the owner's OK, because it uses a SATIE composition, finish one clip w
 This is still unmeasured; the Mac was too slow to train. Follow [`SPATIAL_VIDEO.md`](SPATIAL_VIDEO.md) § "What to run on the Windows machine" on `IMG_9661.MOV`:
 - **A:** left eye only;
 - **B:** both eyes;
-- **C:** both eyes + depth loss.
+- **C:** both eyes + depth loss;
+- **D:** both eyes + per-image exposure compensation (`exposure_comp`). Also try it on `IMG_9660.MOV`: night clips change exposure between frames.
 
-Compare held-out PSNR and `depth_error_vs_sfm`, record them on that page, and set the defaults (`stereo_views`, `depth_lambda`) from the result. Its "To improve or fix" list is the next work after that.
+Compare held-out PSNR (`psnr_cc` for D) and `depth_error_vs_sfm`, record them on that page, and set the defaults (`stereo_views`, `depth_lambda`, `exposure_comp`) from the result. Its "To improve or fix" list is the next work after that.
 
 ## Known issues
 

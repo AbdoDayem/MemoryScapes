@@ -37,7 +37,7 @@ An iPhone spatial video (MV-HEVC, two lenses 17.7 mm apart) keeps both eyes:
 | Key | Contents |
 |---|---|
 | `meta.json` | `{"trainer", "trainer_version", "iterations", "sh_degree", "units": "meters", "up": "+y", "eval_frames": [frame_id, ...]}` |
-| `train_report.json` | Training metrics, including `psnr` (`psnr_split`: `holdout` or `train`), `train_images`, `right_eye_images` (spatial video: right-eye training views), `depth_supervised_images`, and `depth_error_vs_sfm` (median relative error of the rendered depth against `points3d` on the scored frames) |
+| `train_report.json` | Training metrics, including `psnr` (`psnr_split`: `holdout` or `train`), `train_images`, `right_eye_images` (spatial video: right-eye training views), `depth_supervised_images`, `depth_error_vs_sfm` (median relative error of the rendered depth against `points3d` on the scored frames), `psnr_cc` (PSNR after the best affine colour fit per scored frame: structure, not exposure), `exposure_comp`, and `exposure_gains` (`{frame_id: gain}`, the learned brightness per training frame, 1 = the splat's own; `null` without `exposure_comp`) |
 | `metrics.json` | Training curves, parallel arrays: `{"iteration": [], "loss": [], "psnr": [], "num_gaussians": [], "elapsed_s": []}`. Any of `ssim` and `lpips` too. |
 | `point_cloud.ply` | Trained Gaussians, standard 3DGS binary little-endian PLY: `x y z`, `f_dc_0..2`, optional `f_rest_*`, `opacity` (logit), `scale_0..2` (log), `rot_0..3` (quaternion w, x, y, z) |
 | `renders/<frame_id>.png` | The trained splat rendered from that keyframe's camera, at the frame's size or proportionally smaller. Used for side-by-side checks against `ingest/frames/`. |

@@ -63,6 +63,17 @@ class TrainConfig(BaseModel):
     # Spatial video: also train on the right eye (poses/stereo_right.json), one more view per
     # instant, 17.7 mm to the side.
     stereo_views: bool = True
+    # Per-image colour compensation: a 3x3 colour matrix + offset per training image,
+    # learned with the splat and applied to its render before the loss. It absorbs what
+    # changes between frames but isn't the scene: a phone's auto exposure and white
+    # balance (strong at night), and the right eye's brightness offset in spatial video.
+    # Without it the splat bakes those changes into view-dependent colour and floaters.
+    # The average transform is held at identity, so the splat's colours are the average
+    # frame's. Off until it's measured on a GPU (docs/SPATIAL_VIDEO.md); try
+    # --set splat.train.exposure_comp=true.
+    exposure_comp: bool = False
+    exposure_lr: float = 2e-3
+    exposure_reg: float = 1.0  # weight of the average-transform-is-identity penalty
     seed: int = 0
     # Learning rates (gsplat simple_trainer defaults); means lr is scaled by scene size.
     means_lr: float = 1.6e-4
@@ -358,6 +369,19 @@ class GaussianTrainer:
 
         depth_tgts = _load_depths(scene, gts, dev) if cfg.depth_lambda > 0 else [None] * len(gts)
 
+        # Per-image colour transforms (cfg.exposure_comp): [C, 3, 4] = (A - I | b), zero =
+        # identity. Held-out images are never trained, so they're scored as the splat is.
+        color_tf = torch.nn.Parameter(torch.zeros((len(gts), 3, 4), device=dev)) if cfg.exposure_comp else None
+        color_opt = torch.optim.Adam([color_tf], lr=cfg.exposure_lr) if color_tf is not None else None
+        train_rows = torch.as_tensor(train_idx, dtype=torch.long, device=dev)
+
+        def correct(img, i: int):
+            """The render as frame i's camera would have exposed it."""
+            if color_tf is None:
+                return img
+            t = color_tf[i]
+            return img @ (torch.eye(3, device=dev) + t[:, :3]).T + t[:, 3]
+
         def render(i: int, sh_degree: int, bg, scale: float = 1.0, depth: bool = False):
             h, w = gts[i].shape[:2]
             K = Ks_t[i : i + 1]
@@ -397,7 +421,7 @@ class GaussianTrainer:
             tgt = depth_tgts[i]
             renders, _, info = render(i, min(step // cfg.sh_degree_interval, cfg.sh_degree), bg,
                                       depth=tgt is not None)
-            pred = renders[0][..., :3]
+            pred = correct(renders[0][..., :3], i)
             if not mcmc:
                 strategy.step_pre_backward(params, optimizers, state, step, info)
             l1 = F.l1_loss(pred, gt)
@@ -411,8 +435,10 @@ class GaussianTrainer:
             if mcmc:
                 loss = loss + cfg.opacity_reg * torch.sigmoid(params["opacities"]).mean()
                 loss = loss + cfg.scale_reg * torch.exp(params["scales"]).mean()
+            if color_tf is not None:  # keep the average exposure at identity (no global drift)
+                loss = loss + cfg.exposure_reg * color_tf[train_rows].mean(dim=0).square().sum()
             loss.backward()
-            for opt in optimizers.values():
+            for opt in [*optimizers.values(), *([color_opt] if color_opt else [])]:
                 opt.step()
                 opt.zero_grad(set_to_none=True)
             sched.step()
@@ -433,7 +459,7 @@ class GaussianTrainer:
             if on_checkpoint and (step + 1) in cfg.preview_steps:
                 on_checkpoint(step + 1, _to_cloud(params, cfg.antialiased))
 
-        psnr = _evaluate(render, gts, test_idx, cfg.sh_degree)
+        psnr, psnr_cc = _evaluate(render, gts, test_idx, cfg.sh_degree, correct)
         depth_err = _depth_error(render, scene, Ks, gts, test_idx, cfg.sh_degree)
         log_curve(cfg.steps, loss_v, psnr)
         if on_render and cfg.render_max_side > 0:
@@ -450,6 +476,14 @@ class GaussianTrainer:
             "trainer": self.name, "device": str(dev), "strategy": "mcmc" if mcmc else "default",
             "steps": cfg.steps, "gaussians": len(cloud),
             "psnr": round(psnr, 2), "psnr_split": "holdout" if cfg.holdout_every > 0 else "train",
+            # PSNR after the best affine colour fit per scored image: compares structure,
+            # not exposure (fair between runs with and without exposure_comp).
+            "psnr_cc": round(psnr_cc, 2),
+            "exposure_comp": bool(cfg.exposure_comp),
+            # Learned brightness per training image (mean colour-matrix diagonal; 1 = the
+            # splat's own, the average): how the camera's exposure varied, as far as
+            # training could tell. None without exposure_comp.
+            "exposure_gains": _gains(color_tf, train_idx, scene.frame_ids),
             "image_size": list(gts[0].shape[1::-1]), "train_images": int(len(train_idx)),
             "right_eye_images": int(is_right[train_idx].sum()),
             "depth_supervised_images": int(sum(depth_tgts[int(i)] is not None for i in train_idx)),
@@ -602,17 +636,40 @@ def _depth_error(render, scene: SceneData, Ks, gts, idx, sh_degree: int) -> floa
     return float(np.median(np.concatenate(errs))) if errs else None
 
 
-def _evaluate(render, gts, idx, sh_degree: int) -> float:
+def _evaluate(render, gts, idx, sh_degree: int, correct=None) -> tuple[float, float]:
+    """Mean PSNR on the scored images, and the same after the best affine colour fit per
+    image (least squares from the render's RGB to the frame's)."""
     import torch
 
-    psnrs = []
+    def psnr(a, b) -> float:
+        return -10 * math.log10(max(torch.mean((a - b) ** 2).item(), 1e-10))
+
+    plain, cc = [], []
     with torch.no_grad():
         for i in idx:
             renders, _, _ = render(int(i), sh_degree, None)
+            img = renders[0][..., :3]
+            if correct is not None:
+                img = correct(img, int(i))  # identity for held-out images (never trained)
+            img = img.clamp(0, 1)
             gt = gts[int(i)].float() / 255.0
-            mse = torch.mean((renders[0][..., :3].clamp(0, 1) - gt) ** 2).item()
-            psnrs.append(-10 * math.log10(max(mse, 1e-10)))
-    return float(np.mean(psnrs)) if psnrs else float("nan")
+            plain.append(psnr(img, gt))
+            # On the CPU in float64 (MPS has no float64).
+            rgb = img.reshape(-1, 3).cpu().double()
+            x = torch.cat([rgb, torch.ones_like(rgb[:, :1])], dim=1)
+            y = gt.reshape(-1, 3).cpu().double()
+            fit = (x @ torch.linalg.lstsq(x, y).solution).clamp(0, 1)
+            cc.append(psnr(fit, y))
+    if not plain:
+        return float("nan"), float("nan")
+    return float(np.mean(plain)), float(np.mean(cc))
+
+
+def _gains(color_tf, train_idx, frame_ids) -> dict[str, float] | None:
+    if color_tf is None:
+        return None
+    diag = color_tf.detach().cpu().diagonal(dim1=1, dim2=2)  # [C, 3]
+    return {frame_ids[int(i)]: round(1.0 + float(diag[int(i)].mean()), 3) for i in train_idx}
 
 
 def _to_cloud(params, antialiased: bool) -> GaussianCloud:
