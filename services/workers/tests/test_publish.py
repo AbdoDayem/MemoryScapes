@@ -114,3 +114,48 @@ def test_invalid_manifest_is_a_stage_error(ctx):
     assert "splat/lods" in err.value.message
     assert not ctx.storage.exists(ctx.key("publish", "manifest.json"))
     json.dumps(err.value.message)
+
+
+def _spz(antialiased):
+    import numpy as np
+
+    from memoryscapes_workers.visual import splat_io
+
+    n = 4
+    return splat_io.encode_spz(splat_io.GaussianCloud(
+        means=np.zeros((n, 3), np.float32), scales=np.full((n, 3), -3, np.float32),
+        quats=np.tile(np.array([1, 0, 0, 0], np.float32), (n, 1)), opacities=np.zeros(n, np.float32),
+        sh0=np.zeros((n, 3), np.float32), shN=np.zeros((n, 0, 3), np.float32), antialiased=antialiased))
+
+
+@pytest.mark.parametrize("antialiased", [True, False])
+def test_spz_header_flag(antialiased):
+    from memoryscapes_workers.visual import splat_io
+
+    assert splat_io.spz_antialiased(_spz(antialiased)) is antialiased
+    with pytest.raises(ValueError):
+        splat_io.spz_antialiased(b"not an spz")
+
+
+@pytest.mark.parametrize("antialiased", [True, False])
+def test_manifest_records_the_training_mode(ctx, antialiased):
+    """The viewer's blur must match training: classic gets a fixed dilation, anti-aliased
+    training Spark's opacity-compensated blur."""
+    fake_upstream(ctx)
+    lods = read_json(ctx.storage, ctx.key("splat", "lods.json"))
+    write_json(ctx.storage, ctx.key("splat", "lods.json"), {**lods, "antialiased": antialiased})
+    publish.run(ctx)
+    assert manifest(ctx)["splat"]["antialiased"] is antialiased
+
+
+def test_training_mode_from_the_spz_for_older_splat_outputs(ctx):
+    fake_upstream(ctx)  # lods.json without "antialiased"
+    ctx.storage.write_bytes(ctx.key("splat", "lods/lod0.spz"), _spz(True))
+    publish.run(ctx)
+    assert manifest(ctx)["splat"]["antialiased"] is True
+
+
+def test_unreadable_spz_leaves_the_training_mode_out(ctx):
+    fake_upstream(ctx)  # lods.json without "antialiased", lod0.spz isn't a real spz
+    publish.run(ctx)
+    assert "antialiased" not in manifest(ctx)["splat"]

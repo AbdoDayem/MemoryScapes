@@ -16,7 +16,8 @@ Writes {memory_id}/splat/ (the contract is docs/SPLAT_OUTPUTS.md; the debugger r
     renders/<frame_id>.png  the trained splat from each keyframe's camera (trainers that
                          render; not "points")
     lods/lod0.spz ...    cleaned splat, most detailed first
-    lods.json            [{file, count, sh_degree, bytes}], plus bounds and cleanup report
+    lods.json            [{file, count, sh_degree, bytes}], plus antialiased (the training
+                         mode, which the viewer's blur must match), bounds and cleanup report
     preview.spz          early checkpoint (published before training finishes)
     train_report.json    final trainer summary (device, PSNR, timings)
 
@@ -145,6 +146,7 @@ def _splat(io: StageIO, cfg: SplatConfig) -> dict:
         "format": "spz v3",
         "coord_frame": {"units": "meters", "up": "+y"},
         "lods": lods,
+        "antialiased": cleaned.antialiased,
         "bounds": bounds,
         "cleanup": report.to_dict(),
     })
