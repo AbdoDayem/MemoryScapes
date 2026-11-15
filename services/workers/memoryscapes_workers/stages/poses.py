@@ -102,6 +102,26 @@ def run(ctx: StageContext) -> dict:
                      body=lambda io: _poses(io, cfg))
 
 
+def collapsed(centers: np.ndarray, ratio: float = 100.0) -> bool:
+    """Cameras (in capture order) that hop back and forth instead of moving: their summed
+    step length dwarfs the space they cover (2nd-98th percentile, largest axis). Global
+    mapping did this on a pale, low-texture building: all 105 frames placed, 98% of them
+    within 2 cm and a few flung 100 m away, so training lost every gaussian. Real captures
+    on the deploy score 1-17 (walks ~1-3, a near-static clip 17); that one scored ~7700."""
+    if len(centers) < 3:
+        return False
+    path = float(np.linalg.norm(np.diff(centers, axis=0), axis=1).sum())
+    spread = float((np.percentile(centers, 98, axis=0) - np.percentile(centers, 2, axis=0)).max())
+    return path > ratio * max(spread, 1e-9)
+
+
+def _rec_collapsed(rec) -> bool:
+    if rec is None or not hasattr(rec, "images"):  # (test fakes have no images)
+        return False
+    images = sorted((im for im in rec.images.values() if im.has_pose), key=lambda im: im.name)
+    return collapsed(np.array([im.projection_center() for im in images]))
+
+
 def _largest(recs: dict) -> object | None:
     if not recs:
         return None
@@ -193,6 +213,14 @@ def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int, focal_fa
 
     used = cfg.mapper
     rec, registered, pieces = mapping(used)
+    if used == "global" and registered >= needed and _rec_collapsed(rec):
+        # Placed but collapsed: try incremental, and keep it only if it does better.
+        log.warning("[%s] global mapping placed %d/%d frames on nearly one spot; trying "
+                    "incrementally", STAGE, registered, n_images)
+        io.progress(0.45, "global mapping collapsed; trying incremental")
+        alt, alt_registered, alt_pieces = mapping("incremental")
+        if alt_registered >= needed and not _rec_collapsed(alt):
+            rec, registered, pieces, used = alt, alt_registered, alt_pieces, "incremental"
     if registered < needed and used == "global":
         # Global SfM is fast but fragile on some footage (e.g. a gimbal walking straight
         # ahead); incremental is slower and more robust. Same database, no re-extraction.
@@ -208,6 +236,7 @@ def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int, focal_fa
             f"were placed ({pieces} disconnected pieces).",
             CAPTURE_HINT,
         )
+
     io.progress(0.7, f"registered {registered}/{n_images} frames ({used} mapping)")
     return rec, work, used
 

@@ -87,3 +87,51 @@ def test_short_clips_match_every_pair_and_long_ones_sequentially(monkeypatch, ct
     assert poses.choose_matcher(poses.PosesConfig(matcher="sequential"), 114) == "sequential"
     _, _, matched = run_sfm(monkeypatch, ctx, tmp_path, {0: Rec(48)}, {}, n_images=50)
     assert matched == ["match:exhaustive"]
+
+
+def test_a_reconstruction_that_hops_on_the_spot_is_collapsed():
+    """Global mapping on a pale building: 98% of cameras within 2 cm, a few 100 m away."""
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    walk = np.stack([np.zeros(60), np.zeros(60), -np.linspace(0, 60, 60)], -1) + rng.normal(0, 0.02, (60, 3))
+    still = rng.normal(0, 0.05, (60, 3))  # a near-static clip: jitter only
+    hops = rng.normal(0, 0.005, (105, 3))
+    hops[[10, 40, 70, 95]] = [[0, 0, -100], [80, 0, 0], [0, 0, 100], [-60, 0, 50]]
+    assert not poses.collapsed(walk)
+    assert not poses.collapsed(still)
+    assert poses.collapsed(hops)
+
+
+class PosedRec(Rec):
+    """A reconstruction with cameras at the given centres (capture order)."""
+
+    def __init__(self, centers):
+        super().__init__(len(centers))
+        self.images = {i: SimpleNamespace(name=f"f{i:04d}.jpg", has_pose=True, projection_center=lambda c=c: c)
+                       for i, c in enumerate(centers)}
+
+
+def _hops(n=50):
+    import numpy as np
+
+    c = np.random.default_rng(1).normal(0, 0.005, (n, 3))
+    c[[5, 20, 35]] = [[0, 0, -100], [80, 0, 0], [0, 0, 100]]
+    return c
+
+
+def _walk(n=45):
+    import numpy as np
+
+    return np.stack([np.zeros(n), np.zeros(n), -np.linspace(0, 50, n)], -1)
+
+
+def test_a_collapsed_global_result_is_replaced_by_a_good_incremental_one(monkeypatch, ctx, tmp_path):
+    calls, (rec, _, used), _ = run_sfm(monkeypatch, ctx, tmp_path, {0: PosedRec(_hops())}, {0: PosedRec(_walk())})
+    assert calls == ["global", "incremental"] and used == "incremental" and rec.n == 45
+
+
+def test_a_collapsed_global_result_is_kept_when_incremental_does_no_better(monkeypatch, ctx, tmp_path):
+    """A tripod pan can look collapsed too: never fail what global mapping placed."""
+    calls, (rec, _, used), _ = run_sfm(monkeypatch, ctx, tmp_path, {0: PosedRec(_hops())}, {0: Rec(5)})
+    assert calls == ["global", "incremental"] and used == "global" and rec.n == 50
