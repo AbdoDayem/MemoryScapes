@@ -47,6 +47,17 @@ export interface StemsIndex {
   ambient_key: string;
   tags: Record<string, number>;
   dropped?: { label: string; reason: string }[];
+  /** What cleaning did before separation (services/workers/memoryscapes_workers/audio/denoise.py).
+   *  Absent for memories separated before cleaning existed. */
+  cleaning?: {
+    highpass_hz?: number | null;
+    /** "suppressed", "off", or why wind suppression was skipped. */
+    wind?: string;
+    /** Share of frames that looked like mic wind (two-channel recordings only). */
+    wind_like_frames?: number;
+    /** dB removed per band: "20-100 Hz", "100-500 Hz", "500-2000 Hz", "all". */
+    removed_db?: Record<string, number>;
+  };
 }
 
 export interface LocalizedSource {

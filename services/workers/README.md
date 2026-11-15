@@ -201,7 +201,14 @@ All keys are relative to `{memory_id}/` in storage (`LocalStorage` in dev/tests,
 | `poses/cameras.json` | `[{"frame_id", "t", "width", "height", "K", "c2w", "image_key"}]`, with `t` on the audio clock. `image_key` is the undistorted image in `poses/images/`, which `K` describes. |
 | `poses/points3d.npy` | `(N, 3)` scene points, world metres |
 
-**separate**: tags the mix with CLAP over sliding windows, separates each detected class (AudioSep, with Demucs vocals for speech), then turns the estimates into masks that partition the mix. The masks are applied to every channel, so stems + ambient equals the recording and the inter-channel cues survive for DOA. Diffuse classes (wind, rain, insects, crowd) stay in the ambient bed. Writes `separate/stems/<id>.wav`, `separate/ambient.wav` and `separate/stems.json`.
+**separate**: first cleans the recording (`audio/denoise.py`, below), then tags the mix with CLAP over sliding windows, separates each detected class (AudioSep, with Demucs vocals for speech), then turns the estimates into masks that partition the mix. The masks are applied to every channel, so stems + ambient equals the cleaned recording and the inter-channel cues survive for DOA. Diffuse classes (wind, rain, insects, crowd) stay in the ambient bed. Writes `separate/stems/<id>.wav`, `separate/ambient.wav` and `separate/stems.json`.
+
+Cleaning, before separation (`AUDIO_CLEAN=false` turns it off):
+- **High-pass at 60 Hz** (zero phase) removes rumble and handling noise.
+- **Wind suppression, for two-channel recordings.** Microphone wind is turbulence at each capsule, so it's uncorrelated between the mics; real sound reaches both. Below ~1.6 kHz, bins where the channels disagree are turned down by at most ~14 dB, with the same gain on both channels so the direction cues survive.
+- **Skipped** for mono, for 3+ channels, and for near-identical channels (correlation > 0.99, typical of edited downloads), where wind can't be told apart.
+- **Results, on a synthetic scene with mic wind (12 cm stereo):** SI-SDR improved by +4.7, +10.0 and +12.1 dB for light, medium and heavy wind, with birdsong and speech detail unchanged. `noisereduce` made it worse (−1.5 to −3.9 dB, it removes steady ambience), and asking AudioSep for "wind noise" didn't help (≈0 dB, 12–23 s a clip). On the example memories, localization was as good or better.
+- **What it did** is recorded in `stems.json` → `cleaning`: `highpass_hz`, `wind` ("suppressed", "off", or why it was skipped), `wind_like_frames`, and `removed_db` per band.
 
 **localize**: for each stem, in order of preference:
 1. **Audio-visual:** Grounding DINO looks for the class's prompt in the frames where the stem is loudest. Each box is lifted to 3D using the scene points inside it, then the lifts are clustered (at least 2 views).

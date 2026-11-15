@@ -10,20 +10,25 @@ Outputs:
     separate/stems.json       StemsIndex: labels, levels, activity envelopes
 
 Steps:
+0. Clean the recording (audio/denoise.py): a 60 Hz high-pass, then, for two-channel
+   recordings, wind suppression with the same gain on both channels. Everything below
+   works on the cleaned recording. AUDIO_CLEAN=false turns it off.
 1. Tag the mono mix over sliding windows (CLAP) and keep classes that clear a threshold.
 2. Ask the separator for a mono estimate per kept class (AudioSep; Demucs for speech).
 3. Turn the estimates into masks that partition the mix, and apply them to every
-   channel. Stems + ambient == recording, and inter-channel cues survive for DOA.
+   channel. Stems + ambient == the cleaned recording, and inter-channel cues survive for DOA.
 4. Drop stems that are too quiet (their energy goes back to the ambient bed).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from memoryscapes_workers.audio import dsp
+from memoryscapes_workers.audio.denoise import CleaningConfig, clean_recording
 from memoryscapes_workers.audio.separation import Separator
 from memoryscapes_workers.audio.tagging import Tagger, TagResult
 from memoryscapes_workers.audio.vocabulary import VOCABULARY, SoundClass
@@ -48,6 +53,9 @@ class SeparationConfig:
     hop: int = 512
     mask_power: float = 2.0
     activity_hop_s: float = 0.25
+    # None: on unless AUDIO_CLEAN=false. The cleaning itself: audio/denoise.py.
+    clean: bool | None = None
+    cleaning: CleaningConfig = field(default_factory=CleaningConfig)
 
 
 def is_present(window_scores: np.ndarray, cfg: SeparationConfig) -> bool:
@@ -108,6 +116,11 @@ def run(
 
     audio, sr = read_wav(storage, ctx.key("ingest", "audio.wav"))  # (C, N)
     mic = MicInfo.from_json(read_json(storage, ctx.key("ingest", "meta.json"))["mic"])
+    clean = cfg.clean if cfg.clean is not None else os.environ.get("AUDIO_CLEAN", "true").lower() != "false"
+    if clean:
+        audio, cleaning = clean_recording(audio, sr, cfg.cleaning)
+    else:
+        cleaning = {"wind": "off", "highpass_hz": None}
     n = audio.shape[-1]
     mono = dsp.to_mono(audio)
 
@@ -175,6 +188,7 @@ def run(
         ambient_key=ambient_key,
         tags={k: round(v, 4) for k, v in clip_scores.items()},
         dropped=dropped,
+        cleaning=cleaning,
     )
     write_json(storage, ctx.key("separate", "stems.json"), index.to_json())
     return index
