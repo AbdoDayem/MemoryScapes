@@ -149,6 +149,9 @@ class LocalizedSource:
     level_dbfs: float
     level_db_at_1m: float | None  # level corrected for mean mic distance (for SATIE `spl`)
     trajectory: str | None = None
+    # Id of the source this one shares a position with: both stems were found on the
+    # same object and there was nowhere else to put this one (fusion.resolve_stacks).
+    shares_with: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)

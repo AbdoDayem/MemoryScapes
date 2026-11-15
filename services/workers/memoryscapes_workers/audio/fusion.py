@@ -108,3 +108,54 @@ def fuse(
             return Placement(doa.position, doa.spread_m, round(conf, 4), "doa")
 
     return Placement(None, None, 0.0, "diffuse")
+
+
+@dataclass
+class Candidate:
+    """One stem's placement plus what's needed to place it again somewhere else."""
+
+    id: str
+    placement: Placement
+    clusters: list[Cluster]
+    doa_scorer: Callable[[np.ndarray], np.ndarray] | None
+    doa: DoaEstimate | None
+    agree_radius_m: float
+    shares_with: str | None = None
+
+
+def resolve_stacks(candidates: list[Candidate], cfg: FusionConfig = FusionConfig(),
+                   stack_radius_m: float = 0.75) -> list[Candidate]:
+    """Stop separate stems from piling onto one point.
+
+    Stems often land on the same spot because their detection prompts match the same
+    object (an ambulance is both "ambulance" and "car"; a person talks and laughs). The
+    audio can't tell whether that's one object making two sounds or two sources, so:
+    the most confident stem keeps the spot; each other stem there moves to its best
+    placement away from every spot already taken, if it has one good enough on its own
+    (``fuse`` with those clusters and that DOA estimate left out). Otherwise it is the
+    same object: it takes exactly the keeper's position, so the two play from one point,
+    and ``shares_with`` names the keeper. Diffuse stems are left alone. Order is kept.
+    """
+    placed = sorted((c for c in candidates if c.placement.position is not None),
+                    key=lambda c: c.placement.confidence, reverse=True)
+    kept: list[Candidate] = []
+    for cand in placed:
+        pos = np.asarray(cand.placement.position, float)
+        hit = next((k for k in kept if np.linalg.norm(pos - k.placement.position) <= stack_radius_m), None)
+        if hit is None:
+            kept.append(cand)
+            continue
+
+        def free(p) -> bool:
+            return all(np.linalg.norm(np.asarray(p, float) - k.placement.position) > stack_radius_m for k in kept)
+
+        doa = cand.doa if cand.doa is not None and free(cand.doa.position) else None
+        alt = fuse([c for c in cand.clusters if free(c.centre)], cand.doa_scorer, doa, cfg, cand.agree_radius_m)
+        if alt.position is not None and free(alt.position):
+            cand.placement = alt
+            kept.append(cand)
+        else:
+            cand.placement = Placement(np.array(hit.placement.position, float), hit.placement.spread_m,
+                                       cand.placement.confidence, cand.placement.method)
+            cand.shares_with = hit.id
+    return candidates
