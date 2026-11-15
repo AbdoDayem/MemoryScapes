@@ -25,7 +25,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from memoryscapes_workers.audio import doa as doa_mod
-from memoryscapes_workers.audio.fusion import FusionConfig, cluster_candidates, fuse
+from memoryscapes_workers.audio.fusion import Candidate, FusionConfig, cluster_candidates, fuse, resolve_stacks
 from memoryscapes_workers.audio.vocabulary import BY_LABEL
 from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.models import Camera, LocalizedSource, MicInfo, SceneBounds, StemInfo, StemsIndex
@@ -43,6 +43,8 @@ class LocalizationConfig:
     cluster_radius_rel: float = 0.2
     default_stereo_spacing_m: float = 0.12  # phone top/bottom mics; override via meta.json
     fusion: FusionConfig = FusionConfig()
+    # Stems placed closer than this are on one spot (see fusion.resolve_stacks).
+    stack_radius_m: float = 0.75
 
 
 _DEFAULT = object()
@@ -69,13 +71,14 @@ def run(ctx: StageContext, detector: Detector | None = _DEFAULT, cfg: Localizati
     spacing = mic.spacing_m or cfg.default_stereo_spacing_m
 
     detection_cache: dict[tuple[str, str], list[Detection]] = {}
-    sources: list[LocalizedSource] = []
+    # Every stem's placement first, then stacks resolved across stems, then the output.
+    entries: list[tuple[StemInfo, Candidate | None]] = []
     for stem in index.stems:
         cls = BY_LABEL.get(stem.label)
         activity = lambda t, s=stem: index.activity_at(s, t)  # noqa: E731
 
         if cls is None or cls.diffuse:
-            sources.append(_diffuse(stem))
+            entries.append((stem, None))
             continue
 
         # 1. audio-visual candidates
@@ -96,12 +99,20 @@ def run(ctx: StageContext, detector: Detector | None = _DEFAULT, cfg: Localizati
                 doa_scorer = lambda p, b=bearings: doa_mod.bearing_likelihood(p, b, path)  # noqa: E731
                 doa_est = doa_mod.triangulate(candidates, doa_scorer(candidates))
 
-        placement = fuse(clusters, doa_scorer, doa_est, cfg.fusion, agree_radius_m=max(2.0, 1.5 * radius))
-        if placement.position is None:
+        agree = max(2.0, 1.5 * radius)
+        placement = fuse(clusters, doa_scorer, doa_est, cfg.fusion, agree_radius_m=agree)
+        entries.append((stem, Candidate(stem.id, placement, clusters, doa_scorer, doa_est, agree)))
+
+    # 3. stems piled onto one point: move apart, or share the point as one object
+    resolve_stacks([c for _, c in entries if c is not None], cfg.fusion, cfg.stack_radius_m)
+
+    sources: list[LocalizedSource] = []
+    for stem, cand in entries:
+        if cand is None or cand.placement.position is None:
             sources.append(_diffuse(stem))
             continue
-
-        pos = placement.position
+        placement, pos = cand.placement, cand.placement.position
+        activity = lambda t, s=stem: index.activity_at(s, t)  # noqa: E731
         sources.append(
             LocalizedSource(
                 id=stem.id,
@@ -114,6 +125,7 @@ def run(ctx: StageContext, detector: Detector | None = _DEFAULT, cfg: Localizati
                 method=placement.method,
                 level_dbfs=stem.level_dbfs,
                 level_db_at_1m=round(stem.level_dbfs + 20 * np.log10(_mean_distance(pos, cameras, activity)), 2),
+                shares_with=cand.shares_with,
             )
         )
 
