@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
 
@@ -111,10 +112,16 @@ def _publish(io: StageIO, cfg: PublishConfig, version: int, has_scene: bool,
     tree_report: list[dict] = []
     tree_errors: list[str] = []
     levels = lods.get("lods") or []
-    if cfg.lod_tree != "off" and tool:
-        for n in sorted({n for n in cfg.lod_tree_levels if 0 <= n < len(levels)}):
+    todo = sorted({n for n in cfg.lod_tree_levels if 0 <= n < len(levels)}) if cfg.lod_tree != "off" and tool else []
+    if todo:
+        io.progress(0.1, "building the streaming LoD trees of " + ", ".join(f"lod{n}" for n in todo))
+        # build-lod runs on one core, so the levels build side by side (lod1's 7 s hides
+        # behind lod0's 22 s per 1.5M gaussians on an M1 Pro).
+        with ThreadPoolExecutor(max_workers=len(todo)) as pool:
+            jobs = {n: pool.submit(_build_lod_tree, io, tool, levels[n]["file"], cfg.lod_tree, n) for n in todo}
+        for n, job in jobs.items():
             try:
-                trees[n], size = _build_lod_tree(io, tool, levels[n]["file"], cfg.lod_tree, n)
+                trees[n], size = job.result()
             except lod_tree.LodTreeError as exc:
                 if strict:
                     raise StageError(STAGE, f"Couldn't build the streaming LoD tree of lod{n}: {exc}") from exc
@@ -156,7 +163,6 @@ def _build_lod_tree(io: StageIO, tool: list[str], lod_file: str, method: str, le
     """Build publish/lod/lod<level>-lod.rad (+ chunks) from that .spz level. Returns the
     level's manifest `rad` entry and the tree's size in bytes."""
     ctx = io.ctx
-    io.progress(0.1, f"building the streaming LoD tree of lod{level}")
     src = io.work_dir / "lod_tree_src" / Path(lod_file).name
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_bytes(ctx.storage.read_bytes(ctx.key("splat", lod_file)))  # just this level, not all of splat/
