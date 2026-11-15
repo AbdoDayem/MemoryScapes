@@ -35,7 +35,9 @@ from memoryscapes_workers.vision.grounding import Detection, Detector, lift_box,
 
 @dataclass(frozen=True)
 class LocalizationConfig:
-    max_frames: int = 12
+    # Frames searched per stem (the loudest ones). With 12, one missed detection could leave
+    # a source 3 views instead of 4 and drop it below the confidence floor (hard_mode speech).
+    max_frames: int = 16
     min_frame_activity: float = 0.3
     det_threshold: float = 0.3
     cluster_radius_m: float = 1.5
