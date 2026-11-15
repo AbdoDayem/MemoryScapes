@@ -126,3 +126,27 @@ def test_asking_for_a_tree_without_the_tool_is_an_error(ctx):
     with pytest.raises(StageError) as err:
         publish.run(dataclasses.replace(ctx, config={"publish": {"lod_tree": "quality"}}))
     assert "build-lod" in err.value.message and "setup.py" in err.value.hint
+
+
+def test_levels_build_side_by_side(ctx, tmp_path, monkeypatch):
+    """build-lod uses one core, so publish runs the levels' builds at the same time."""
+    script = tmp_path / "slow_build_lod.py"
+    script.write_text(textwrap.dedent('''
+        import os, sys, time
+        from pathlib import Path
+        start = time.time()
+        time.sleep(1.0)
+        src = Path(sys.argv[-1]); stem = src.with_suffix("")
+        (stem.parent / (stem.name + "-lod.rad")).write_bytes(b"RAD")
+        (stem.parent / (stem.name + "-lod-0.radc")).write_bytes(b"chunk")
+        with open(os.environ["BUILD_LOD_LOG"], "a") as f:
+            f.write(f"{start} {time.time()}\\n")
+    '''))
+    log = tmp_path / "runs.log"
+    monkeypatch.setenv("BUILD_LOD_LOG", str(log))
+    monkeypatch.setattr(lod_tree, "find_tool", lambda: [sys.executable, str(script)])
+    fake_upstream(ctx)
+    publish.run(ctx)
+    assert all(trees(ctx))
+    (s0, e0), (s1, e1) = sorted(tuple(map(float, line.split())) for line in log.read_text().splitlines())
+    assert s1 < e0, "the second build started only after the first had finished"
