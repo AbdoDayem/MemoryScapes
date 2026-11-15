@@ -153,8 +153,9 @@ The manifest is the contract between the pipeline and the viewer. Version it so 
 {
   "id": "mem_123", "version": 3,
   "coord_frame": { "units": "meters", "up": "+y", "origin_geo": [37.4275, -122.1697, 30], "heading_deg": 0 },
-  "splat": { "lods": [{ "url": ".../lod0.spz", "count": 300000 }, { "url": ".../lod1.spz" }],
-             "rad": { "url": ".../splat-lod.rad", "chunks": [".../splat-lod-0.radc"] },
+  "splat": { "lods": [{ "url": ".../lod0.spz", "count": 300000,
+                        "rad": { "url": ".../lod0-lod.rad", "chunks": [".../lod0-lod-0.radc"] } },
+                      { "url": ".../lod1.spz" }],
              "antialiased": false },
   "navigation": { "spawn": {}, "walkable_bounds": {}, "original_path": ".../path.json" },
   "audio": {

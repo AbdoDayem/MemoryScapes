@@ -13,12 +13,13 @@
  *    budget, smallest splat, SH degree) while frames are slow, and back up when the
  *    viewer keeps up with the display.
  *
- * When the memory has a LoD tree (.rad, built by the publish stage), desktops stream it
- * instead (`streamsTree`): no tree to build in the browser, and the coarse whole scene
- * arrives first.
+ * When that LOD also comes as a LoD tree (.rad, built by the publish stage), the device
+ * streams it instead (`pickTree`): no tree to build in the browser, and the coarse whole
+ * scene arrives first.
  *
  * `?quality=high|medium|low|lowest` fixes a tier, `?lod=N` forces a .spz LOD, `?stream=1|0`
- * forces streaming on or off, and `?perf` shows the frame rate (for measuring on devices).
+ * forces streaming on or off, `?device=mobile|desktop` tries the other device's path, and
+ * `?perf` shows the frame rate (for measuring on devices).
  */
 
 export interface QualityTier {
@@ -70,13 +71,14 @@ export const START_TIER: Record<DeviceClass, number> = { desktop: 0, mobile: 1 }
  */
 export function pickLods<T extends { count?: number }>(lods: readonly T[], device: DeviceClass, force?: number): T[] {
   if (lods.length === 0) return [];
-  let top: number;
-  if (force !== undefined && Number.isInteger(force) && force >= 0 && force < lods.length) top = force;
-  else {
-    top = lods.findIndex((l) => (l.count ?? 0) <= MAX_LOD_SPLATS[device]);
-    if (top < 0) top = lods.length - 1;
-  }
-  return lods.slice(top).reverse();
+  return lods.slice(topLevel(lods, device, force)).reverse();
+}
+
+/** Index of the most detailed LOD the device takes (or `force`, when it's a valid index). */
+function topLevel(lods: readonly { count?: number }[], device: DeviceClass, force?: number): number {
+  if (force !== undefined && Number.isInteger(force) && force >= 0 && force < lods.length) return force;
+  const top = lods.findIndex((l) => (l.count ?? 0) <= MAX_LOD_SPLATS[device]);
+  return top < 0 ? lods.length - 1 : top;
 }
 
 export interface ViewerOverrides {
@@ -84,8 +86,10 @@ export interface ViewerOverrides {
   tier?: number;
   /** A forced top LOD index (the .spz path). */
   lod?: number;
-  /** Stream the LoD tree (true) or not (false), whatever the device. */
+  /** Stream lod0's LoD tree whatever the device (true), or never stream (false). */
   stream?: boolean;
+  /** Treat the device as a desktop or a phone (to try the phone path on a desktop). */
+  device?: DeviceClass;
   /** Show the frame-rate readout. */
   perf: boolean;
 }
@@ -99,18 +103,30 @@ export function parseOverrides(search: string): ViewerOverrides {
   if (lod !== null && /^\d+$/.test(lod)) out.lod = Number(lod);
   const stream = q.get("stream");
   if (stream === "1" || stream === "0") out.stream = stream === "1";
+  const device = q.get("device");
+  if (device === "desktop" || device === "mobile") out.device = device;
   return out;
 }
 
 /**
- * Whether to stream the memory's LoD tree rather than load its .spz levels. Desktops only:
- * a tree is ~1.5x the size of lod0 (interior nodes), and even at the lowest tier Spark
- * fetched 27 of 36 chunks of a 1.5M-gaussian tree (about 40 MB), against 12 MB for the
- * levels a phone loads (lod2 + lod1).
+ * The LoD tree to stream instead of loading .spz levels, if any: the tree of the most
+ * detailed level the device takes, so desktops stream lod0's and phones lod1's (the publish
+ * stage builds both). A tree holds ~1.6x its level's gaussians (interior nodes), so a phone
+ * must not stream lod0's: even at the lowest tier Spark fetched 27 of 36 chunks of a
+ * 1.5M-gaussian tree (about 40 MB), where all of lod1's tree is 16 MB.
+ *
+ * Older manifests have one tree, lod0's, as `splat.rad`. `?stream=1` streams lod0's tree
+ * on any device; `?stream=0` and `?lod=N` load the .spz levels.
  */
-export function streamsTree(device: DeviceClass, hasTree: boolean, overrides: ViewerOverrides): boolean {
-  if (!hasTree || overrides.lod !== undefined) return false;
-  return overrides.stream ?? device === "desktop";
+export function pickTree<T>(
+  splat: { lods: readonly { count?: number; rad?: T }[]; rad?: T },
+  device: DeviceClass,
+  overrides: ViewerOverrides,
+): { tree: T; level: number } | undefined {
+  if (overrides.lod !== undefined || overrides.stream === false || splat.lods.length === 0) return undefined;
+  const level = overrides.stream ? 0 : topLevel(splat.lods, device);
+  const tree = splat.lods[level].rad ?? (level === 0 ? splat.rad : undefined);
+  return tree === undefined ? undefined : { tree, level };
 }
 
 export interface GovernorOptions {

@@ -53,12 +53,16 @@ def referenced_files(manifest: dict[str, Any]) -> dict[str, str]:
             files.setdefault(key, kind)
 
     splat = manifest.get("splat") or {}
+    # Streaming LoD trees, on each level (lods[i].rad) or, in older manifests, splat.rad:
+    # the header and every chunk it names.
+    trees = [lod.get("rad") for lod in splat.get("lods") or []] + [splat.get("rad")]
     for lod in splat.get("lods") or []:
         add(lod.get("url"), "splat")
-    rad = splat.get("rad") or {}  # the streaming LoD tree: its header and every chunk it names
-    add(rad.get("url"), "splat")
-    for chunk in rad.get("chunks") or []:
-        add(chunk, "splat")
+    for tree in trees:
+        if isinstance(tree, dict):
+            add(tree.get("url"), "splat")
+            for chunk in tree.get("chunks") or []:
+                add(chunk, "splat")
     add((manifest.get("navigation") or {}).get("original_path"), "path")
     audio = manifest.get("audio") or {}
     for source in audio.get("sources") or []:

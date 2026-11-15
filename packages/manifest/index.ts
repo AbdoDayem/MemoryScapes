@@ -27,6 +27,15 @@ export interface SatieSoundscape {
   host_map: Record<string, string>;
 }
 
+/** A splat as a Spark LoD tree for streaming: a chunked .rad header from Spark's build-lod.
+ * `chunks` are the files the header names, listed so the API stores them with the memory. */
+export interface LodTree {
+  url: string;
+  chunks: string[];
+  /** Splats in the tree, interior nodes included. */
+  count?: number;
+}
+
 /**
  * Relative URLs (e.g. "splat/lods/lod0.spz") are relative to the memory's asset base,
  * which the API returns next to the manifest.
@@ -42,11 +51,11 @@ export interface MemoryManifest {
     heading_deg?: number;
   };
   splat: {
-    /** .spz levels, most detailed first */
-    lods: { url: string; count?: number }[];
-    /** The same splat as a Spark LoD tree for streaming (a chunked .rad from Spark's build-lod).
-     * `chunks` are the files the header names, listed so the API stores them with the memory. */
-    rad?: { url: string; chunks: string[]; count?: number };
+    /** .spz levels, most detailed first. A level may also come as a LoD tree to stream
+     * (`rad`): lods[0] for desktops, lods[1] for phones. */
+    lods: { url: string; count?: number; rad?: LodTree }[];
+    /** Older manifests: the tree of lods[0] (newer ones use lods[0].rad). */
+    rad?: LodTree;
     /** Trained with anti-aliasing (gsplat's antialiased mode). Missing or false: classic
      * 3DGS, which the viewer draws with the classic fixed dilation instead of Spark's
      * opacity-compensated blur. */

@@ -217,3 +217,18 @@ def test_a_streaming_lod_tree_is_stored_with_every_chunk(store):
     r = client.get("/memories/mem_1/files/publish/lod/splat-lod.rad", headers={"Range": "bytes=0-65535"})
     assert r.status_code == 206 and r.content == b"RAD"
     assert client.get("/memories/mem_1/files/publish/lod/splat-lod-1.radc").content == b"chunkchunk"
+
+
+def test_every_levels_tree_is_referenced():
+    """Newer manifests put a tree on each level (lods[0] for desktops, lods[1] for phones);
+    older ones have splat.rad. Both must be stored."""
+    def tree(name):
+        return {"url": f"publish/lod/{name}-lod.rad", "chunks": [f"publish/lod/{name}-lod-{i}.radc" for i in range(2)]}
+
+    lods = [{"url": "splat/lods/lod0.spz", "rad": tree("lod0")}, {"url": "splat/lods/lod1.spz", "rad": tree("lod1")},
+            {"url": "splat/lods/lod2.spz"}]
+    files = memory_files.referenced_files({**MANIFEST, "splat": {"lods": lods, "rad": tree("splat")}})
+    splat = {k for k, kind in files.items() if kind == "splat"}
+    for name in ("lod0", "lod1", "splat"):
+        assert {tree(name)["url"], *tree(name)["chunks"]} <= splat
+    assert {lod["url"] for lod in lods} <= splat

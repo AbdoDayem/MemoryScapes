@@ -14,7 +14,8 @@ This page covers what changed, what to run, what to check, and where to record r
 | #26 | **Spatial video → better splats.** An iPhone spatial video's second eye gives true scale, extra right-eye training views and stereo depth maps. | [`SPATIAL_VIDEO.md`](SPATIAL_VIDEO.md) |
 | #27 | **Audio keeps the filmer's voice.** Wind cleaning no longer cuts the speech band on iPhone audio. Speech always gets a separation slot, and "too quiet" is now relative. Unplaced speech becomes narration, heard everywhere. | `services/workers/README.md` (separate, localize) |
 | #28 | **Faster viewer.** Phones stop at lod1. Spark LoD with quality tiers is chosen from frame times, and there's a `?perf` readout. | [`RENDER_SPEED.md`](RENDER_SPEED.md) |
-| #29 | **Streaming LoD trees.** Publish builds a `.rad` tree with Spark's `build-lod` (Rust), and desktops stream it. | [`RENDER_SPEED.md`](RENDER_SPEED.md), `services/workers/README.md` § "Publish: the streaming LoD tree" |
+| #29 | **Streaming LoD trees.** Publish builds `.rad` trees with Spark's `build-lod` (Rust). Since #36, of lod0 for desktops and of lod1 for phones, so phones stream too. | [`RENDER_SPEED.md`](RENDER_SPEED.md), `services/workers/README.md` § "Publish: the streaming LoD trees" |
+| #33 | **Blur matches the training.** The manifest's `splat.antialiased` picks Spark's blur. Classic training, the default, had been drawn slightly dimmed and thinned. | [`RENDER_SPEED.md`](RENDER_SPEED.md) |
 
 ## Rules that matter here
 
@@ -71,7 +72,7 @@ Open http://localhost:3000. The logs are `logs\api.log` and `logs\web.log`.
 
 ## 3. Give existing memories a streaming tree
 
-Memories published before `build-lod` was installed don't have a tree. New memories processed through the site get one automatically: publish builds it, and the API copies it into the database when the run finishes.
+Memories published before `build-lod` was installed don't have trees, and memories published before per-level trees have only lod0's, so phones can't stream them. Republishing fixes both, and records the training mode for the blur (`splat.antialiased`). New memories processed through the site get both trees automatically: publish builds them, and the API copies them into the database when the run finishes.
 
 For each existing memory (the folders in `services\workers\data\storage\` with a `publish\manifest.json`):
 
@@ -104,7 +105,7 @@ This writes a synthetic 1.5M-gaussian memory with its LoD tree. Follow [`RENDER_
 3. For each fixed tier (`&quality=high` … `&quality=lowest`), record fps and GPU ms, standing and walking (hold W).
 4. Compare load times with `&stream=0`.
 
-Then do the same on a real memory, and on a phone on the same network. Start the site with `start.cmd --host 0.0.0.0` for that; phones use the `.spz` levels, not the tree.
+Then do the same on a real memory, and on a phone on the same network. Start the site with `start.cmd --host 0.0.0.0` for that. Phones stream lod1's tree; compare with `&stream=0`, which loads the `.spz` levels. On the PC, `&device=mobile` tries the phone path.
 
 **Record the results in `RENDER_SPEED.md`:**
 - GPU, monitor resolution and refresh rate, browser;

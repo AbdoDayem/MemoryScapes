@@ -101,9 +101,9 @@ tried on real footage. The splat stage writes the files in `docs/SPLAT_OUTPUTS.m
 changed (`--force` re-runs them). `splat.trainer=auto` (the default) uses gsplat on an NVIDIA
 GPU, otherwise the PyTorch rasterizer on Apple Silicon, otherwise `points`.
 
-### Publish: the streaming LoD tree
+### Publish: the streaming LoD trees
 
-When Spark's `build-lod` is installed, publish also turns `splat/lods/lod0.spz` into a chunked LoD tree. It writes `publish/lod/splat-lod.rad` (a small header) plus `splat-lod-<i>.radc` (chunks of 64k splats). The manifest lists all of them under `splat.rad`, so the API stores every chunk with the memory. Desktop viewers stream the tree: a coarse whole scene first, then the detail the view needs. Phones keep loading the smaller `.spz` levels (`docs/RENDER_SPEED.md`).
+When Spark's `build-lod` is installed, publish also turns `splat/lods/lod0.spz` and `lod1.spz` into chunked LoD trees (`publish.lod_tree_levels`, default `[0, 1]`). Each is a small header, `publish/lod/lod<n>-lod.rad`, plus chunks of 64k splats, `lod<n>-lod-<i>.radc`. The manifest lists each tree on its level as `splat.lods[n].rad`, header and chunks, so the API stores every chunk with the memory. Each device streams the tree of the most detailed level it takes: lod0's on desktops, lod1's on phones. That gives a coarse whole scene first, then the detail the view needs (`docs/RENDER_SPEED.md`). Manifests from before per-level trees have one tree, lod0's, as `splat.rad`; the viewer and the API still read it.
 
 - **Install:** `deploy/setup.py` builds the tool with cargo (Rust) into `services/workers/.tools/`, at the Spark version `apps/web` pins, so the format matches the viewer.
 - **Finding the tool:** `SPARK_BUILD_LOD` can point at a binary instead, or be `off`.

@@ -67,41 +67,55 @@ def test_tool_lookup(monkeypatch, tmp_path):
     assert lod_tree.find_tool() is None
 
 
-def test_publish_builds_the_tree_and_lists_every_chunk(ctx, fake_tool):
+def trees(ctx):
+    return [lod.get("rad") for lod in manifest(ctx)["splat"]["lods"]]
+
+
+def test_publish_builds_trees_and_lists_every_chunk(ctx, fake_tool):
+    """lod0's tree for desktops, lod1's for phones, each on its level."""
     fake_upstream(ctx)
     summary = publish.run(ctx)
-    rad = manifest(ctx)["splat"]["rad"]
-    assert rad["url"] == "publish/lod/splat-lod.rad" and rad["count"] == 7700
-    assert rad["chunks"] == [f"publish/lod/splat-lod-{i}.radc" for i in (0, 1, 2, 10)]
-    # The API stores exactly the files the manifest names, so every chunk must be there.
-    assert all(ctx.storage.exists(f"{ctx.memory_id}/{u}") for u in [rad["url"], *rad["chunks"]])
-    assert summary["lod_tree"]["chunks"] == 4
-    # The .spz levels stay for phones, older viewers and the debugger.
-    assert len(manifest(ctx)["splat"]["lods"]) == 2
+    lods = manifest(ctx)["splat"]["lods"]
+    assert "rad" not in manifest(ctx)["splat"]  # the older single-tree field
+    for n, lod in enumerate(lods):
+        rad = lod["rad"]
+        assert rad["url"] == f"publish/lod/lod{n}-lod.rad" and rad["count"] == 7700
+        assert rad["chunks"] == [f"publish/lod/lod{n}-lod-{i}.radc" for i in (0, 1, 2, 10)]
+        # The API stores exactly the files the manifest names, so every chunk must be there.
+        assert all(ctx.storage.exists(f"{ctx.memory_id}/{u}") for u in [rad["url"], *rad["chunks"]])
+        assert lod["url"] == f"splat/lods/lod{n}.spz"  # the .spz levels stay, for the fallback and the debugger
+    assert [t["lod"] for t in summary["lod_trees"]] == [0, 1] and summary["lod_trees"][0]["chunks"] == 4
+
+
+def test_which_levels_get_a_tree(ctx, fake_tool):
+    fake_upstream(ctx)
+    publish.run(dataclasses.replace(ctx, config={"publish": {"lod_tree_levels": [0, 5]}}))  # no lod5: skipped
+    assert [t is not None for t in trees(ctx)] == [True, False]
 
 
 def test_without_the_tool_publish_skips_the_tree(ctx):
     fake_upstream(ctx)
     publish.run(ctx)
-    assert "rad" not in manifest(ctx)["splat"]
+    assert trees(ctx) == [None, None]
 
 
 def test_installing_the_tool_republishes(ctx, monkeypatch, tmp_path):
     fake_upstream(ctx)
     publish.run(ctx)
-    assert "rad" not in manifest(ctx)["splat"]
+    assert trees(ctx) == [None, None]
     script = tmp_path / "fake_build_lod.py"
     script.write_text(FAKE)
     monkeypatch.setattr(lod_tree, "find_tool", lambda: [sys.executable, str(script)])
     assert publish.run(ctx)["version"] == 2  # "auto" resolved differently: not skipped
-    assert "rad" in manifest(ctx)["splat"]
+    assert all(trees(ctx))
 
 
 def test_a_failing_tool_doesnt_block_publishing_unless_asked_for(ctx, fake_tool):
     fake_upstream(ctx)
     ctx.storage.write_bytes(ctx.key("splat", "lods/lod0.spz"), b"broken")
     summary = publish.run(ctx)
-    assert "rad" not in manifest(ctx)["splat"] and "Decoding failed" in summary["lod_tree_error"]
+    assert trees(ctx)[0] is None and trees(ctx)[1] is not None  # lod1's tree still built
+    assert summary["lod_tree_error"].startswith("lod0: ") and "Decoding failed" in summary["lod_tree_error"]
     strict = dataclasses.replace(ctx, config={"publish": {"lod_tree": "quick"}})
     with pytest.raises(StageError, match="LoD tree"):
         publish.run(strict)

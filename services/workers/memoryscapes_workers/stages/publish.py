@@ -2,10 +2,12 @@
 
 Implemented: build the manifest from the stage outputs, validate it against
 packages/manifest/memory.schema.json and write it, for **private** memories. When Spark's
-build-lod tool is installed (visual/lod_tree.py), also build the splat's streaming LoD tree
-from lod0 (``lod_tree``: auto | quality | quick | off). It's built here, not in the splat
-stage, because publishing is cheap to redo (installing the tool later rebuilds only this
-stage) and because the privacy pass will change the splat here first.
+build-lod tool is installed (visual/lod_tree.py), also build streaming LoD trees
+(``lod_tree``: auto | quality | quick | off) of the levels in ``lod_tree_levels``: lod0,
+which desktops stream, and lod1, which phones stream (they stop at lod1). They're built
+here, not in the splat stage, because publishing is cheap to redo (installing the tool
+later rebuilds only this stage) and because the privacy pass will change the splat here
+first.
 
 Not yet (needed before ``unlisted``/``public``, which this stage refuses until then):
 - Blur faces and license plates (retrain or mask the splat); optionally detect and mute
@@ -18,8 +20,8 @@ Reads   splat/lods.json (its ``antialiased`` training mode becomes splat.antiali
         always comes from SATIE after separation and localization; the original
         recording is still listed as the ambient bed)
 Writes  publish/manifest.json
-        publish/lod/splat-lod.rad, splat-lod-<i>.radc  (the LoD tree, when built; listed in
-        the manifest as splat.rad)
+        publish/lod/lod<n>-lod.rad, lod<n>-lod-<i>.radc  (level n's LoD tree, when built;
+        listed in the manifest as splat.lods[n].rad)
 
 Asset URLs in the manifest are keys relative to the memory root, e.g.
 "splat/lods/lod0.spz". The API returns an ``asset_base`` next to the manifest and the
@@ -52,9 +54,12 @@ class PublishConfig(BaseModel):
     visibility: Literal["private", "unlisted", "public"] = "private"
     title: str | None = None
     owner: str | None = None
-    # The streaming LoD tree: "auto" builds one ("quality") when build-lod is installed.
+    # Streaming LoD trees: "auto" builds them ("quality") when build-lod is installed.
     # Resolved before fingerprinting, so installing the tool republishes.
     lod_tree: Literal["auto", "quality", "quick", "off"] = "auto"
+    # Which .spz levels get a tree: lod0 for desktops, lod1 for phones (renderQuality.ts
+    # caps phones at 600k gaussians, so they stop at lod1).
+    lod_tree_levels: list[int] = [0, 1]
 
 
 def run(ctx: StageContext) -> dict:
@@ -102,15 +107,22 @@ def _publish(io: StageIO, cfg: PublishConfig, version: int, has_scene: bool,
     nav = io.read_upstream_json("poses", "navigation.json")
     meta = io.read_upstream_json("ingest", "meta.json")
     scene = io.read_upstream_json("soundscape", "scene.json") if has_scene else None
-    tree, tree_bytes, tree_note = None, 0, None
-    if cfg.lod_tree != "off" and tool and lods.get("lods"):
-        try:
-            tree, tree_bytes = _build_lod_tree(io, tool, lods["lods"][0]["file"], cfg.lod_tree)
-        except lod_tree.LodTreeError as exc:
-            if strict:
-                raise StageError(STAGE, f"Couldn't build the streaming LoD tree: {exc}") from exc
-            # Optional: the viewer falls back to the .spz levels.
-            tree_note = str(exc)
+    trees: dict[int, dict] = {}
+    tree_report: list[dict] = []
+    tree_errors: list[str] = []
+    levels = lods.get("lods") or []
+    if cfg.lod_tree != "off" and tool:
+        for n in sorted({n for n in cfg.lod_tree_levels if 0 <= n < len(levels)}):
+            try:
+                trees[n], size = _build_lod_tree(io, tool, levels[n]["file"], cfg.lod_tree, n)
+            except lod_tree.LodTreeError as exc:
+                if strict:
+                    raise StageError(STAGE, f"Couldn't build the streaming LoD tree of lod{n}: {exc}") from exc
+                # Optional: the viewer falls back to the .spz levels.
+                tree_errors.append(f"lod{n}: {exc}")
+                continue
+            tree_report.append({"lod": n, "chunks": len(trees[n]["chunks"]), "count": trees[n].get("count"),
+                                "mb": round(size / 1e6, 1)})
     if "antialiased" not in lods and lods.get("lods"):
         # Splat outputs from before lods.json recorded the training mode: the .spz says.
         try:
@@ -121,7 +133,7 @@ def _publish(io: StageIO, cfg: PublishConfig, version: int, has_scene: bool,
     manifest = build_manifest(ctx.memory_id, version=version, lods=lods, navigation=nav,
                               ingest_meta=meta, scene=scene, cfg=cfg,
                               has_audio=ctx.storage.exists(ctx.key("ingest", "audio.wav")),
-                              rad=tree)
+                              trees=trees)
     validate_manifest(manifest)
     write_json(io.out_dir / MANIFEST, manifest)
     audio = manifest["audio"]
@@ -133,23 +145,22 @@ def _publish(io: StageIO, cfg: PublishConfig, version: int, has_scene: bool,
         "placed_sources": sum(1 for s in audio["sources"] if s.get("position") is not None),
         "soundscape": audio.get("soundscape_provider", {}).get("name"),
     }
-    if tree is not None:
-        summary["lod_tree"] = {"chunks": len(tree["chunks"]), "count": tree.get("count"),
-                               "mb": round(tree_bytes / 1e6, 1)}
-    elif tree_note:
-        summary["lod_tree_error"] = tree_note
+    if tree_report:
+        summary["lod_trees"] = tree_report
+    if tree_errors:
+        summary["lod_tree_error"] = "; ".join(tree_errors)
     return summary
 
 
-def _build_lod_tree(io: StageIO, tool: list[str], lod0_file: str, method: str) -> tuple[dict, int]:
-    """Build publish/lod/splat-lod.rad (+ chunks) from the splat's lod0. Returns the
-    manifest's splat.rad entry and the tree's size in bytes."""
+def _build_lod_tree(io: StageIO, tool: list[str], lod_file: str, method: str, level: int) -> tuple[dict, int]:
+    """Build publish/lod/lod<level>-lod.rad (+ chunks) from that .spz level. Returns the
+    level's manifest `rad` entry and the tree's size in bytes."""
     ctx = io.ctx
-    io.progress(0.1, "building the streaming LoD tree")
-    src = io.work_dir / "lod_tree_src" / Path(lod0_file).name
+    io.progress(0.1, f"building the streaming LoD tree of lod{level}")
+    src = io.work_dir / "lod_tree_src" / Path(lod_file).name
     src.parent.mkdir(parents=True, exist_ok=True)
-    src.write_bytes(ctx.storage.read_bytes(ctx.key("splat", lod0_file)))  # just lod0, not all of splat/
-    built = lod_tree.build(tool, src, io.out_dir / "lod", method=method)
+    src.write_bytes(ctx.storage.read_bytes(ctx.key("splat", lod_file)))  # just this level, not all of splat/
+    built = lod_tree.build(tool, src, io.out_dir / "lod", method=method, name=f"lod{level}")
     entry: dict[str, Any] = {"url": f"{STAGE}/lod/{built.header}",
                              "chunks": [f"{STAGE}/lod/{c}" for c in built.chunks]}
     if built.count is not None:
@@ -159,7 +170,7 @@ def _build_lod_tree(io: StageIO, tool: list[str], lod0_file: str, method: str) -
 
 def build_manifest(memory_id: str, *, version: int, lods: dict, navigation: dict,
                    ingest_meta: dict, scene: dict | None, cfg: PublishConfig,
-                   has_audio: bool, rad: dict | None = None) -> dict[str, Any]:
+                   has_audio: bool, trees: dict[int, dict] | None = None) -> dict[str, Any]:
     def rel(key: str) -> str:
         """Storage key -> URL relative to the memory root."""
         prefix = f"{memory_id}/"
@@ -210,11 +221,11 @@ def build_manifest(memory_id: str, *, version: int, lods: dict, navigation: dict
     if ingest_meta.get("captured_at"):
         meta_out["captured_at"] = ingest_meta["captured_at"]
 
-    # Most detailed first; the viewer loads the last (coarsest) one first.
-    splat: dict[str, Any] = {"lods": [{"url": f"splat/{lod['file']}", "count": int(lod["count"])}
-                                      for lod in lods["lods"]]}
-    if rad is not None:
-        splat["rad"] = rad
+    # Most detailed first; the viewer loads the last (coarsest) one first. A level with a
+    # LoD tree lists it, and the device that tops out at that level streams it.
+    splat: dict[str, Any] = {"lods": [{"url": f"splat/{lod['file']}", "count": int(lod["count"]),
+                                       **({"rad": trees[n]} if trees and n in trees else {})}
+                                      for n, lod in enumerate(lods["lods"])]}
     if lods.get("antialiased") is not None:
         splat["antialiased"] = bool(lods["antialiased"])
     return {
