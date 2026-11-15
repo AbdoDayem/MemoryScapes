@@ -77,6 +77,23 @@ def test_create_upload_process_ready(api):
     assert {j["stage"]: j["status"] for j in db.list_jobs(mid)} == {s: "done" for s in m["stages"]}
 
 
+@pytest.mark.parametrize("base", [None, "/api"])
+def test_upload_url_is_encoded_for_names_with_spaces(api, monkeypatch, base):
+    """Phone apps name videos like this. The URL must be ready to use as given (curl and
+    other non-browser clients don't encode it), and the name must come back unchanged."""
+    client, root, _ = api
+    if base:
+        monkeypatch.setenv("PUBLIC_API_URL", base)
+    name = "WhatsApp Video 2026-11-14 at 5.20.26 PM (1).mp4"
+    body = create(client, names=(name,))
+    url = body["uploads"][0]["url"]
+    assert " " not in url
+    assert url.endswith("/upload/WhatsApp%20Video%202026-11-14%20at%205.20.26%20PM%20%281%29.mp4")
+    r = client.put(url.removeprefix(base or ""), content=VIDEO)
+    assert r.status_code == 200 and r.json()["file_name"] == name
+    assert (root / body["id"] / "upload" / "video.mp4").read_bytes() == VIDEO
+
+
 def test_get_memory_keeps_the_viewer_fields(api):
     client, _, _ = api
     body = create(client)
