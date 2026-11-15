@@ -4,7 +4,7 @@ MemoryScapes turns a video (or panoramas) plus an audio recording into a walkabl
 
 ## Status
 
-Partly a scaffold: most API endpoints still return `501`. In the workers, the visual stages (`ingest`, `poses`, `splat`) and the audio stages (`separate`, `localize`, `soundscape`) are implemented and tested; `publish` writes the manifest for private memories (no privacy pass yet). The API serves `GET /memories/:id` and its files; the web viewer (`/memories/[id]`) renders the splat with Spark and plays the audio. `python -m memoryscapes_workers.run` runs the whole pipeline on one uploaded video (each stage in its own process), and the debugger's upload page drives it. Follow the build phases in `docs/ARCHITECTURE.md` § 9. The MVP is video → COLMAP → gsplat → web viewer, with private memories only. Stage data contracts are in `services/workers/README.md`.
+Partly a scaffold: most API endpoints still return `501`. In the workers, the visual stages (`ingest`, `poses`, `splat`) and the audio stages (`separate`, `localize`, `soundscape`) are implemented and tested; `publish` writes the manifest for private memories (no privacy pass yet). The API serves `GET /memories/:id` and its files; the web viewer (`/memories/[id]`) renders the splat with Spark and plays the audio. `python -m memoryscapes_workers.run` runs the whole pipeline on one uploaded video (each stage in its own process), and the debugger's upload page drives it. Follow the build phases in `docs/ARCHITECTURE.md` § 9. **Taking over on the Windows PC? Start with `docs/WINDOWS_HANDOFF.md`.** The MVP is video → COLMAP → gsplat → web viewer, with private memories only. Stage data contracts are in `services/workers/README.md`.
 
 ## Layout
 
@@ -17,7 +17,7 @@ Partly a scaffold: most API endpoints still return `501`. In the workers, the vi
 | `infra` | `docker-compose.yml` (Postgres/PostGIS, Redis, MinIO) and `db/init.sql` (schema). |
 | `tools/debugger` | Local Vite + React + three.js UI for inspecting stage outputs and checking that the audio and splat pipelines agree. Standalone package (not an npm workspace). |
 | `deploy` | Running the site on the Windows PC: `setup.py` (venvs, CUDA torch, models, web build, `.env`) and `serve.py` (API + web, restarted on failure), with `windows/*.cmd` launchers. Guide: `docs/DEPLOY_WINDOWS.md`. |
-| `docs` | `ARCHITECTURE.md`, a styled `architecture.html`, `SPLAT_OUTPUTS.md` (what the poses/splat stages must write), `DEPLOY_WINDOWS.md`, `SPATIAL_VIDEO.md` (iPhone spatial video → scale, right-eye views, stereo depth: status and next steps), and `RENDER_SPEED.md` (viewer frame rate: quality tiers, measurements, next steps). |
+| `docs` | `ARCHITECTURE.md`, a styled `architecture.html`, `SPLAT_OUTPUTS.md` (what the poses/splat stages must write), `DEPLOY_WINDOWS.md`, `SPATIAL_VIDEO.md` (iPhone spatial video → scale, right-eye views, stereo depth: status and next steps), `RENDER_SPEED.md` (viewer frame rate: quality tiers, streaming LoD trees, measurements, next steps), and `WINDOWS_HANDOFF.md` (what to deploy, check and measure next on the Windows PC). |
 
 ## Commands
 
@@ -54,4 +54,4 @@ cd services/workers && .venv/Scripts/python examples/render_benchmark.py   # 1.5
 - **SATIE always does the spatialization, on the client.** The viewer plays sound only through `satie-runtime`, with each localized source bound as a host at its position and the camera as the listener. Don't add another spatializer or a fixed binaural render. Keep the "Sound by SATIE" badge (its licence requires it).
 - **Keep heavy ML dependencies optional** (`[visual]`, `[audio]` extras) so the API and CI stay light.
 - **Privacy before public.** Nothing becomes `public` without the publish stage's face/plate blur and speech check.
-- Never commit `.env`, real credentials, or pipeline outputs (`*.ply`, `*.spz`, `data/`).
+- Never commit `.env`, real credentials, or pipeline outputs (`*.ply`, `*.spz`, `*.rad`, `*.radc`, `data/`).
