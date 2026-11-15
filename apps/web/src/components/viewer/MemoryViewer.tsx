@@ -35,6 +35,19 @@ import { failureSummary, pollAction, stageRows } from "./status";
 type Phase = "loading" | "processing" | "ready" | "failed" | "error";
 type AudioState = "none" | "loading" | "ready" | "playing" | "error";
 
+/**
+ * three.js and Spark (2.9 MB minified), imported once, both at once, and as soon as the
+ * viewer mounts: their download overlaps the manifest request instead of following it.
+ */
+let renderLibs: Promise<[typeof import("three"), typeof import("@sparkjsdev/spark")]> | null = null;
+function loadRenderLibs() {
+  if (!renderLibs) {
+    renderLibs = Promise.all([import("three"), import("@sparkjsdev/spark")]);
+    renderLibs.catch(() => (renderLibs = null)); // a failed download is retried by the next caller
+  }
+  return renderLibs;
+}
+
 const WALK_SPEED = 1.4; // m/s
 const RUN_SPEED = 3.5;
 const LOOK_SPEED = 0.004; // rad per pixel
@@ -53,6 +66,10 @@ export default function MemoryViewer({ memoryId }: { memoryId: string }) {
   const audioRef = useRef<SatieAudioEngine | null>(null);
 
   replayRef.current = replay;
+
+  useEffect(() => {
+    loadRenderLibs().catch(() => {}); // mountScene reports a failure
+  }, []);
 
   // ---- manifest (poll while processing)
   useEffect(() => {
@@ -273,12 +290,17 @@ interface SceneHooks {
 
 /** Builds the three.js scene; returns a cleanup function. */
 async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: string, hooks: SceneHooks): Promise<() => void> {
-  const THREE = await import("three");
-  const { SparkRenderer, SplatMesh } = await import("@sparkjsdev/spark");
   const resolve = assetResolver(assetBase, window.location.href);
-
   const overrides = parseOverrides(window.location.search);
   const device = overrides.device ?? deviceClass(navigator);
+  // The LoD tree to stream, if any (see "the splat" below). A streamed mesh is
+  // "initialized" before fetching anything, so check that its header can be fetched; the
+  // check runs while the libraries download.
+  const picked = pickTree(manifest.splat, device, overrides);
+  const treeReachable = picked
+    ? fetch(resolve(picked.tree.url), { headers: { Range: "bytes=0-0" } }).then((r) => r.ok, () => false)
+    : Promise.resolve(false);
+  const [THREE, { SparkRenderer, SplatMesh }] = await loadRenderLibs();
 
   const renderer = new THREE.WebGLRenderer({ antialias: false });
   renderer.setSize(el.clientWidth, el.clientHeight);
@@ -340,14 +362,10 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
   // first chunk is a coarse view of everything, and Spark fetches the detail the view
   // needs. Otherwise the .spz LODs, coarsest first, each replacing the previous when
   // loaded; the last becomes a LoD tree in the browser. Either way Spark draws a splat budget.
-  const picked = pickTree(manifest.splat, device, overrides);
   const streamTree = async ({ tree, level }: NonNullable<typeof picked>): Promise<boolean> => {
-    const url = resolve(tree.url);
     hooks.setLodStatus("Streaming splat…");
-    // A streamed mesh is "initialized" before fetching anything: check the header first.
-    const head = await fetch(url, { headers: { Range: "bytes=0-0" } }).catch(() => null);
-    if (!head?.ok) return false;
-    const mesh = new SplatMesh({ url, paged: true });
+    if (!(await treeReachable)) return false;
+    const mesh = new SplatMesh({ url: resolve(tree.url), paged: true });
     mesh.maxSh = TIERS[tier].maxSh;
     await mesh.initialized;
     if (hooks.isDisposed()) {
