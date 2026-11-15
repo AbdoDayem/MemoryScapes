@@ -35,6 +35,34 @@ class AudioStreamInfo:
 
 
 @dataclass
+class StereoInfo:
+    left_view: int
+    right_view: int
+    baseline_m: float | None  # between the lens centres
+    hfov_deg: float | None
+
+
+# ffmpeg's AVStereo3DView: the eye each view of a multiview stream shows.
+_VIEW_LEFT, _VIEW_RIGHT = 1, 2
+
+
+def parse_stereo(video: dict) -> StereoInfo | None:
+    """Stereo layout of a multiview video stream from ffprobe (ffmpeg 7.1+), or None."""
+    ids = [int(v) for v in str(video.get("view_ids_available") or "").split(",") if v.strip().isdigit()]
+    pos = [int(v) for v in str(video.get("view_pos_available") or "").split(",") if v.strip().isdigit()]
+    if len(ids) < 2 or len(pos) != len(ids) or _VIEW_LEFT not in pos or _VIEW_RIGHT not in pos:
+        return None
+    side = next((sd for sd in video.get("side_data_list") or [] if sd.get("side_data_type") == "Stereo 3D"), {})
+    baseline = side.get("baseline")  # micrometres
+    return StereoInfo(
+        left_view=ids[pos.index(_VIEW_LEFT)],
+        right_view=ids[pos.index(_VIEW_RIGHT)],
+        baseline_m=float(baseline) / 1e6 if baseline else None,
+        hfov_deg=_ratio(side.get("horizontal_field_of_view")),
+    )
+
+
+@dataclass
 class MediaInfo:
     path: str
     container: str | None
@@ -52,6 +80,9 @@ class MediaInfo:
     captured_at: str | None = None  # ISO 8601 UTC
     # Lens focal length as a 35 mm equivalent (iPhone .mov metadata), if recorded.
     focal_35mm: float | None = None
+    # Stereo (e.g. iPhone spatial video, MV-HEVC): which view ids are the left/right eye,
+    # the distance between the two lenses and the horizontal field of view.
+    stereo: StereoInfo | None = None
 
     @property
     def display_size(self) -> tuple[int, int]:
@@ -161,6 +192,7 @@ def parse_probe(data: dict, path: str = "") -> MediaInfo:
         info.fps = _ratio(video.get("avg_frame_rate")) or _ratio(video.get("r_frame_rate"))
         nb = video.get("nb_frames")
         info.num_frames = int(nb) if nb and nb.isdigit() else None
+        info.stereo = parse_stereo(video)
     if audio:
         info.audio = AudioStreamInfo(
             codec=audio.get("codec_name"),
@@ -224,18 +256,26 @@ def fit_size(width: int, height: int, max_side: int) -> tuple[int, int]:
     return w, h
 
 
+def supports_views() -> bool:
+    """Can this ffmpeg decode one view of a multiview (MV-HEVC) stream? Needs 7.1+."""
+    out = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, check=False).stdout
+    m = re.search(r"ffmpeg version n?(\d+)\.(\d+)", out)
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= (7, 1)
+
+
 def iter_frames(
-    src: Path, size: tuple[int, int], sample_fps: float, gray: bool = False
+    src: Path, size: tuple[int, int], sample_fps: float, gray: bool = False, view: int | None = None
 ) -> Iterator[np.ndarray]:
     """Decode frames at a constant ``sample_fps``, rotated upright and resized to ``size``.
 
     Frame i is at t = i / sample_fps from the start of the stream. ffmpeg applies the
-    display rotation (autorotate) before the scale filter.
+    display rotation (autorotate) before the scale filter. ``view``: one view id of a
+    multiview (stereo) stream; the same sampling gives frame-for-frame partners per view.
     """
     w, h = size
     pix_fmt, channels = ("gray", 1) if gray else ("rgb24", 3)
     cmd = [
-        "ffmpeg", "-v", "error", "-i", str(src), "-map", "0:v:0", "-an",
+        "ffmpeg", "-v", "error", "-i", str(src), "-map", "0:v:0" if view is None else f"0:v:view:{view}", "-an",
         "-vf", f"fps={sample_fps:.6f},scale={w}:{h}:flags=area",
         "-f", "rawvideo", "-pix_fmt", pix_fmt, "-",
     ]

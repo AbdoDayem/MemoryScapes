@@ -40,7 +40,7 @@ from memoryscapes_workers.stagekit import StageError, StageIO, run_stage, write_
 
 STAGE = "poses"
 log = logging.getLogger("memoryscapes.poses")
-VERSION = "5"  # 2: audio contract; 3: points3d_rgb.npy; 4: focal prior, mapper fallback,
+VERSION = "6"  # 6: metric scale from spatial video; 2: audio contract; 3: points3d_rgb.npy; 4: focal prior, mapper fallback,
 #                sky masks, walking-speed scale check; 5: edited videos (cross-shot)
 
 CAPTURE_HINT = (
@@ -69,6 +69,8 @@ class PosesConfig(BaseModel):
     # Metric scale: handheld eye height above the ground plane. Override when known.
     eye_height_m: float = 1.5
     fixed_scale: float | None = None
+    # Spatial (stereo) video: measure the scale from the two eyes (visual/stereo.py).
+    stereo_scale: bool = True
     corridor_radius_m: float = 1.5
     use_gpu: bool = True  # SIFT on CUDA when the pycolmap build supports it
 
@@ -197,6 +199,26 @@ def shot_coverage(meta: dict, placed: set[str]) -> list[dict]:
     return out
 
 
+def _stereo_scale(io: StageIO, rec, meta: dict, ingest_dir: Path, image_dir: Path):
+    """Metric scale from a spatial video's right-eye frames, or None (not stereo, or the
+    measurement was too weak to trust)."""
+    st_meta = meta.get("stereo") or {}
+    right_dir = ingest_dir / st_meta.get("right_frames", "frames_right")
+    if not st_meta.get("baseline_m") or not right_dir.is_dir():
+        return None
+    from memoryscapes_workers.visual import stereo
+
+    io.progress(0.7, "measuring scale from the stereo pair")
+    fit = stereo.scale_from_reconstruction(rec, image_dir, right_dir, float(st_meta["baseline_m"]))
+    if fit is None or fit.confidence < 0.3:
+        log.warning("[%s] stereo scale unusable (%s); falling back to the eye-height guess", STAGE,
+                    "too few matches" if fit is None else f"confidence {fit.confidence:.2f}")
+        return None
+    log.info("[%s] stereo scale %.4f m/unit from %d points in %d frames (spread %.0f%%, offset %+.2f px)",
+             STAGE, fit.scale, fit.points, fit.frames, 100 * fit.spread, fit.disparity_offset_px)
+    return fit
+
+
 def focal_prior(keyframes: dict, cfg: PosesConfig) -> dict:
     """Starting focal length for SfM, as a factor of the long image side."""
     if keyframes.get("focal_px"):
@@ -227,9 +249,12 @@ def _poses(io: StageIO, cfg: PosesConfig) -> dict:
     pts = np.array([p.xyz for p in rec.points3D.values()])
     times = np.array([frame_times[im.name] for im in images], float)
     shot_ids = np.array([shot_of.get(im.name, 0) for im in images])
+    stereo_scale = _stereo_scale(io, rec, meta, ingest_dir, image_dir) if cfg.stereo_scale else None
     align = al.estimate_alignment(centers, rots, pts, eye_height_m=cfg.eye_height_m, times=times,
                                   segments=shot_ids,
-                                  fixed_scale=cfg.fixed_scale)
+                                  fixed_scale=cfg.fixed_scale,
+                                  measured_scale=(stereo_scale.scale, stereo_scale.confidence, "stereo")
+                                  if stereo_scale is not None else None)
 
     # ---- undistort, then move the undistorted model into the world frame
     raw_model = work / "model_raw"
@@ -294,7 +319,8 @@ def _poses(io: StageIO, cfg: PosesConfig) -> dict:
     coverage = shot_coverage(meta, {im.name for im in images})
     write_json(out / "alignment.json", {**align.to_dict(), "stats": stats, "mapper": mapper_used,
                                         "shots": coverage,
-                                        "focal_prior": focal})
+                                        "focal_prior": focal,
+                                        "stereo_scale": stereo_scale.to_dict() if stereo_scale else None})
 
     warnings = []
     if len(coverage) > 1 and any(c["placed"] < 0.5 for c in coverage):
