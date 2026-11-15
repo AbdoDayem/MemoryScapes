@@ -23,6 +23,8 @@ services/workers/examples/out/
 # Pipeline outputs
 *.ply
 *.spz
+*.rad
+*.radc
 
 # OS / editor
 .DS_Store
