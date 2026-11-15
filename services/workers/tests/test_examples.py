@@ -12,8 +12,9 @@ import pytest
 from evaluate import BAD_VERDICTS, evaluate
 from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.providers.soundscape import StubProvider
-from memoryscapes_workers.stages import localize, separate, soundscape
-from memoryscapes_workers.storage import LocalStorage, read_json
+from memoryscapes_workers.stagekit import STAGE_MARKER
+from memoryscapes_workers.stages import localize, publish, separate, soundscape
+from memoryscapes_workers.storage import LocalStorage, read_json, write_json
 from scenes import SCENARIOS, OracleDetector, OracleSeparator, OracleTagger, render, write_inputs
 
 
@@ -25,6 +26,23 @@ def run(tmp_path, scenario, detector=True):
     localized = localize.run(ctx, detector=OracleDetector(r) if detector else None)
     scene = soundscape.run(ctx, provider=StubProvider())
     return ctx, {row.label: row for row in evaluate(r, localized)}, scene
+
+
+def publish_audio(ctx) -> dict:
+    """Publish the memory with stand-in visual outputs, so the manifest is validated against
+    what the audio stages really wrote (a source method the schema didn't know once made
+    publish reject every memory whose voice became narration)."""
+    s = ctx.storage
+    for stage in ("ingest", "poses", "splat"):
+        write_json(s, ctx.key(stage, STAGE_MARKER), {"fingerprint": f"fp-{stage}"})
+    write_json(s, ctx.key("poses", "navigation.json"), {"spawn": {"position": [0, 1.6, 0]}})
+    write_json(s, ctx.key("splat", "lods.json"), {"lods": [{"file": "lods/lod0.spz", "count": 1}]})
+    publish.run(ctx)  # raises when the manifest doesn't match memory.schema.json
+    manifest = read_json(s, ctx.key("publish", "manifest.json"))
+    scene = read_json(s, ctx.key("soundscape", "scene.json"))
+    assert [(m["id"], m.get("method"), m["position"]) for m in manifest["audio"]["sources"]] == \
+        [(x["id"], x.get("method"), x["position"]) for x in scene["sources"]]
+    return manifest
 
 
 # scenario -> sound -> verdicts that count as a pass. Speech is placed only on strong
@@ -49,8 +67,18 @@ def test_example_scenario(tmp_path, name):
     assert not bad, bad
     for label, ok in EXPECTED[name].items():
         assert rows[label].verdict in ok, (label, rows[label])
-    # every stem made it into the soundscape
+    # every stem made it into the soundscape, and the memory publishes
     assert {s["label"] for s in scene["sources"]} == {r.label for r in rows.values() if r.verdict != "not separated"}
+    publish_audio(ctx)
+
+
+def test_an_unseen_voice_is_narration_all_the_way_to_the_manifest(tmp_path):
+    """No frame shows the speaker (the filmer): the voice is narration, heard everywhere,
+    through the soundscape and into the published manifest."""
+    ctx, rows, _ = run(tmp_path, SCENARIOS["street_cafe"], detector=False)
+    assert rows["speech"].verdict == "narration (heard everywhere)"
+    voice = [s for s in publish_audio(ctx)["audio"]["sources"] if s["label"] == "speech"]
+    assert [(s["method"], s["position"]) for s in voice] == [("narration", None)]
 
 
 def test_hard_mode_drops_the_false_tag(tmp_path):
