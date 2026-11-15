@@ -45,6 +45,13 @@ class LocalizationConfig:
     fusion: FusionConfig = FusionConfig()
     # Stems placed closer than this are on one spot (see fusion.resolve_stacks).
     stack_radius_m: float = 0.75
+    # Speech is narration (no position: heard everywhere at its recorded level) unless the
+    # evidence that it comes from one visible spot is strong. Whoever is filming talks from
+    # right at the moving mic, which can't be triangulated, and a person in frame may not
+    # be the one talking. Pinned to the wrong spot, a voice faded as the visitor walked
+    # away (an iPhone clip: the filmer's voice placed on a bystander 4 m away, conf 0.68).
+    unseen_speech_as_narration: bool = True
+    speech_place_min_confidence: float = 0.75
 
 
 _DEFAULT = object()
@@ -99,8 +106,16 @@ def run(ctx: StageContext, detector: Detector | None = _DEFAULT, cfg: Localizati
                 doa_scorer = lambda p, b=bearings: doa_mod.bearing_likelihood(p, b, path)  # noqa: E731
                 doa_est = doa_mod.triangulate(candidates, doa_scorer(candidates))
 
+        if cls.kind == "speech" and not clusters and cfg.unseen_speech_as_narration:
+            entries.append((stem, None))  # narration (see _diffuse)
+            continue
+
         agree = max(2.0, 1.5 * radius)
         placement = fuse(clusters, doa_scorer, doa_est, cfg.fusion, agree_radius_m=agree)
+        if (cls.kind == "speech" and cfg.unseen_speech_as_narration
+                and placement.confidence < cfg.speech_place_min_confidence):
+            entries.append((stem, None))  # narration: not sure enough where the voice is
+            continue
         entries.append((stem, Candidate(stem.id, placement, clusters, doa_scorer, doa_est, agree)))
 
     # 3. stems piled onto one point: move apart, or share the point as one object
@@ -109,7 +124,8 @@ def run(ctx: StageContext, detector: Detector | None = _DEFAULT, cfg: Localizati
     sources: list[LocalizedSource] = []
     for stem, cand in entries:
         if cand is None or cand.placement.position is None:
-            sources.append(_diffuse(stem))
+            narration = stem.kind == "speech" and cfg.unseen_speech_as_narration
+            sources.append(_diffuse(stem, "narration" if narration else "diffuse"))
             continue
         placement, pos = cand.placement, cand.placement.position
         activity = lambda t, s=stem: index.activity_at(s, t)  # noqa: E731
@@ -163,7 +179,9 @@ def _mean_distance(pos: np.ndarray, cameras: list[Camera], activity) -> float:
     return float(max((w * d).sum() / w.sum(), 0.5))
 
 
-def _diffuse(stem: StemInfo) -> LocalizedSource:
+def _diffuse(stem: StemInfo, method: str = "diffuse") -> LocalizedSource:
+    """No position: heard everywhere. "narration" is speech no frame shows (the person
+    filming, usually); "diffuse" is a sound with no single place (wind, rain, a crowd)."""
     return LocalizedSource(
         id=stem.id,
         label=stem.label,
@@ -172,7 +190,7 @@ def _diffuse(stem: StemInfo) -> LocalizedSource:
         position=None,
         spread_m=None,
         confidence=0.0,
-        method="diffuse",
+        method=method,
         level_dbfs=stem.level_dbfs,
         level_db_at_1m=None,
     )

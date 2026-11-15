@@ -2,11 +2,13 @@
 
 1. High-pass at 60 Hz (zero phase): rumble and handling noise, with almost no audible loss.
 2. Wind (two-channel recordings): microphone wind is turbulence at each capsule, so it's
-   uncorrelated between the mics, while real sound reaches both. Where the channels
-   disagree below ~1.6 kHz, that part is turned down (a Wiener gain from the coherent share
-   of the power: |cross-spectrum| / mean channel power). The same gain goes on both channels,
-   so the inter-channel cues localization needs are kept. Above ~1.6 kHz nothing changes:
-   there, real sound fields stop being coherent at phone mic spacings.
+   uncorrelated between the mics, while real sound reaches both. The gain is the coherent
+   share of the power (|cross-spectrum| / mean channel power), the same on both channels so
+   the inter-channel cues localization needs are kept.
+   - Below 200 Hz it always applies: there, real sound reaches both mics alike on any phone.
+   - Above 200 Hz (fading out by 2 kHz) it applies only while that low band shows wind.
+     Phones process their stereo, and an iPhone 16 Plus's channels hardly agree above
+     ~500 Hz even in calm air: an always-on gain there removed 3-5 dB of speech-band sound.
 
 On a synthetic scene with mic wind (stereo, 12 cm), this improved SI-SDR by +4.7, +10.0
 and +12.1 dB for light, medium and heavy wind, and kept birdsong and speech detail intact.
@@ -29,7 +31,10 @@ from scipy import signal
 class CleaningConfig:
     highpass_hz: float = 60.0  # 0 turns the high-pass off
     wind: bool = True
-    wind_max_hz: float = 800.0  # full effect below this, fading out by twice this
+    wind_max_hz: float = 1000.0  # wind gating reaches this, fading out by twice this
+    always_below_hz: float = 200.0  # below this the gain applies whether or not wind blows
+    calm_share: float = 0.8  # low-band coherent share at or above this: no wind
+    windy_share: float = 0.4  # ...at or below this: full wind
     gain_floor: float = 0.2  # turn wind down by at most ~14 dB
     smoothing_s: float = 0.15  # time constant of the spectral averages
     window_s: float = 0.064
@@ -65,23 +70,26 @@ def _suppress_block(x: np.ndarray, sr: int, cfg: CleaningConfig) -> tuple[np.nda
     nb = int(band.sum())
     p_ll = np.zeros(nb); p_rr = np.zeros(nb); p_lr = np.zeros(nb, complex)
     ratio = np.empty((nb, left.shape[1]))
-    msc = np.empty_like(ratio)
     lb, rb = left[band], right[band]
     for t in range(left.shape[1]):
         p_ll = alpha * p_ll + (1 - alpha) * np.abs(lb[:, t]) ** 2
         p_rr = alpha * p_rr + (1 - alpha) * np.abs(rb[:, t]) ** 2
         p_lr = alpha * p_lr + (1 - alpha) * lb[:, t] * np.conj(rb[:, t])
         ratio[:, t] = np.abs(p_lr) / (0.5 * (p_ll + p_rr) + 1e-20)  # coherent share of the power
-        msc[:, t] = np.abs(p_lr) ** 2 / (p_ll * p_rr + 1e-20)
     ratio = signal.convolve2d(ratio, np.ones((3, 1)) / 3, mode="same", boundary="symm")
     gain = np.clip(ratio, cfg.gain_floor, 1.0)
-    fade = np.clip((f[band] - cfg.wind_max_hz) / cfg.wind_max_hz, 0.0, 1.0)[:, None]
+    fb = f[band]
+    # How windy each frame is, from the band where real sound always agrees between mics.
+    low = (fb >= 50) & (fb < cfg.always_below_hz)
+    wind = np.clip((cfg.calm_share - ratio[low].mean(0)) / (cfg.calm_share - cfg.windy_share), 0.0, 1.0)
+    k = max(1, int(round(0.3 * sr / hop)))
+    wind = np.convolve(wind, np.ones(k) / k, mode="same")
+    above = (fb >= cfg.always_below_hz)[:, None]
+    gain = np.where(above, 1.0 - wind[None] * (1.0 - gain), gain)
+    fade = np.clip((fb - cfg.wind_max_hz) / cfg.wind_max_hz, 0.0, 1.0)[:, None]
     spec[:, band] *= (fade + (1 - fade) * gain)[None].astype(spec.dtype)
     _, y = signal.istft(spec, **kw)
-    low = (f[band] >= 50) & (f[band] < 500)
-    energy = (np.abs(lb[low]) ** 2 + np.abs(rb[low]) ** 2).sum(0)
-    flags = (msc[low].mean(0) < 0.5) & (energy > np.median(energy))
-    return y[..., : x.shape[-1]].astype(np.float32), flags
+    return y[..., : x.shape[-1]].astype(np.float32), wind > 0.5
 
 
 def suppress_wind(audio: np.ndarray, sr: int, cfg: CleaningConfig = CleaningConfig()) -> tuple[np.ndarray, float]:

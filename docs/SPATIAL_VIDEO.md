@@ -96,12 +96,11 @@ Compare `psnr` (held-out frames) and `depth_error_vs_sfm`. Also walk each result
 7. **Dense initialisation** from the stereo depth (back-projected points) for bland surfaces SfM misses.
 8. **Debugger.** Show the right-eye frames and the depth maps, and the stereo scale next to the alignment check.
 
-## Known issue elsewhere (audio)
+## Audio on these clips (fixed)
 
-The audio cleaning step (`audio/denoise.py`, PR #23) removes **3–5 dB of real sound at 0.5–2 kHz** on iPhone 16 Plus recordings, even with no wind.
-- **Cause:** the phone's processed stereo channels hardly agree above ~500 Hz, and the step reads that as wind.
-- **Workaround:** `AUDIO_CLEAN=false`.
-- **Fix, designed and measured but not built:**
-  - below 200 Hz, keep the current gain;
-  - above 200 Hz, apply it only in frames where the 50–200 Hz band shows wind: weight = clip((0.8 − mean coherent share) / 0.4, 0, 1), smoothed over 0.3 s, fading out by 1 kHz.
-  - **Measured:** the iPhone clips lost 0.0 dB at 0.5–2 kHz, and synthetic wind improved by +5.9 / +10.3 / +12.3 dB (light / medium / heavy).
+On the iPhone 16 Plus test clips, the filmer's voice was lost on the way to playback, for three reasons. All three are now fixed (see `services/workers/README.md`, separate and localize):
+1. **Cleaning cut the speech band.** The wind step removed 3–5 dB at 0.5–2 kHz, because the phone's processed stereo hardly agrees there. Above 200 Hz it now acts only while wind blows, and removes 0.0 dB there on both clips.
+2. **Separation dropped the voice.** Speech came 11th behind false CLAP tags (only 8 stems get separated), or was cut as "too quiet" by a fixed −55 dBFS. Speech now always gets a slot, and "too quiet" is relative to the recording.
+3. **Localization pinned it to a bystander 4 m away**, so it faded as the visitor walked. Speech without strong evidence of one visible spot is now narration, heard everywhere.
+
+The iPhone's 4-channel spatial audio (APAC) can be decoded on a Mac (AVFoundation), but its directions didn't follow the camera's turning in these clips. It isn't used yet; a controlled test (a speaker at a known side) would show whether it can be.

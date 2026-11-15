@@ -45,7 +45,12 @@ class SeparationConfig:
     tag_threshold: float = 0.2
     tag_strong: float = 0.35
     max_stems: int = 8
-    min_stem_dbfs: float = -55.0
+    # A stem is dropped as too quiet when it's more than min_stem_below_mix_db under the
+    # recording's own level, or under min_stem_dbfs at all. Relative, because phone clips
+    # (at night especially) are quiet overall: a fixed -55 dBFS cut a person's voice at
+    # -58 dBFS from a clip whose mix was about -38 dBFS.
+    min_stem_below_mix_db: float = 30.0
+    min_stem_dbfs: float = -70.0
     # A separator asked for a sound that isn't there returns leakage, which looks like
     # the other stems combined. Real stems stay well below this even with heavy leakage.
     max_redundancy: float = 0.9
@@ -71,7 +76,10 @@ def select_classes(tags: TagResult, cfg: SeparationConfig) -> list[SoundClass]:
     clip = tags.clip_scores()
     present = [c for c in VOCABULARY if not c.diffuse and c.label in tags.scores and is_present(tags.scores[c.label], cfg)]
     present.sort(key=lambda c: clip[c.label], reverse=True)
-    return present[: cfg.max_stems]
+    # Voices first: the people in a memory matter more than any other sound, and on real
+    # recordings CLAP scores "people speaking" well below broadband prompts (construction,
+    # train, airplane), which would otherwise take every slot.
+    return ([c for c in present if c.kind == "speech"] + [c for c in present if c.kind != "speech"])[: cfg.max_stems]
 
 
 def find_redundant(stem_mags: np.ndarray, tag_scores: list[float], max_similarity: float) -> dict[int, float]:
@@ -143,14 +151,15 @@ def run(
     window_times: list[float] | None = None
     infos: list[StemInfo] = []
     dropped: list[dict] = []
+    mix_level = dsp.dbfs(audio)
     for i, c in enumerate(classes):
         stem = stems[i]
         level = dsp.dbfs(stem)
         reason = None
         if i in redundant:
             reason = f"looks like the other stems combined (similarity {redundant[i]:.2f}): likely a false tag"
-        elif level < cfg.min_stem_dbfs:
-            reason = f"too quiet ({level:.1f} dBFS)"
+        elif level < max(cfg.min_stem_dbfs, mix_level - cfg.min_stem_below_mix_db):
+            reason = f"too quiet ({level:.1f} dBFS, {mix_level - level:.0f} dB under the recording)"
         if reason:
             ambient = ambient + stem
             dropped.append({"label": c.label, "reason": reason})
