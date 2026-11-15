@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     dev_user_id: str = "usr_dev"
     dev_user_handle: str = "dev"
     max_upload_mb: int = 500
+    # Longest video the pipeline accepts. The upload page says the same
+    # (apps/web/src/components/upload/UploadPanel.tsx, MAX_SECONDS); keep the two equal.
+    max_video_seconds: int = 120
     workers_python: str = DEFAULT_WORKERS_PYTHON
 
 
