@@ -263,5 +263,21 @@ def decode_spz(data: bytes) -> GaussianCloud:
     )
 
 
+def spz_antialiased(data: bytes) -> bool:
+    """The antialiased flag from a .spz header, decompressing only the header."""
+    import zlib
+
+    try:
+        raw = zlib.decompressobj(wbits=31).decompress(data, 16)
+    except zlib.error as exc:
+        raise ValueError(f"not a gzip-compressed spz: {exc}") from exc
+    if len(raw) < 16:
+        raise ValueError("truncated spz")
+    magic, version, _, _, _, flags, _ = struct.unpack_from("<IIIBBBB", raw, 0)
+    if magic != SPZ_MAGIC or version not in (2, 3):
+        raise ValueError(f"unsupported spz (magic={magic:#x}, version={version})")
+    return bool(flags & SPZ_FLAG_ANTIALIASED)
+
+
 def read_spz(path: Path) -> GaussianCloud:
     return decode_spz(Path(path).read_bytes())

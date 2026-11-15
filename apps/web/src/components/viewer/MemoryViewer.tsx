@@ -29,7 +29,7 @@ import { getMemory, type MemoryResponse } from "@/lib/api";
 import { assetResolver } from "./assets";
 import { createGpuTimer } from "./gpuTimer";
 import { asWalkable, clampToWalkable, samplePath, type CapturePath } from "./navigation";
-import { deviceClass, parseOverrides, pickLods, QualityGovernor, START_TIER, streamsTree, TIERS } from "./renderQuality";
+import { blurFor, deviceClass, parseOverrides, pickLods, QualityGovernor, START_TIER, streamsTree, TIERS } from "./renderQuality";
 import { failureSummary, pollAction, stageRows } from "./status";
 
 type Phase = "loading" | "processing" | "ready" | "failed" | "error";
@@ -285,7 +285,8 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
   el.appendChild(renderer.domElement);
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x101014);
-  const spark = new SparkRenderer({ renderer });
+  // Blur as in training (classic or anti-aliased), or fine detail looks thinner than trained.
+  const spark = new SparkRenderer({ renderer, ...blurFor(manifest.splat.antialiased) });
   scene.add(spark);
   const camera = new THREE.PerspectiveCamera(60, el.clientWidth / el.clientHeight, 0.05, 20000);
 

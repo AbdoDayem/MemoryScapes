@@ -45,7 +45,12 @@ Measured on one frame of a 1.5M-gaussian scene (MacBook Pro M1 Pro, Chrome, 3024
    - **Stepping back up:** after holding the display's full rate for 5 s, it steps back up.
    - **Limited retries:** a tier that failed waits 4× longer before it's retried, and isn't retried after failing twice.
    - **Slow displays:** it measures the display while the splat loads, so a browser capped at 30 fps (Chrome's battery saver) doesn't push it to the lowest tier.
-6. **URL switches** for measuring:
+6. **Blur matches the training** (`blurFor`, from the manifest's `splat.antialiased`).
+   - Classic training (the trainer's default) is drawn with Spark's `preBlurAmount: 0.3, blurAmount: 0`, which is the fixed dilation the rasterizer applied in training.
+   - Anti-aliased training gets Spark's default `blurAmount: 0.3`, which compensates opacity.
+   - Spark's default on a classic splat dims and thins fine detail. A manifest without the flag counts as classic.
+   - This affects image quality, not speed.
+7. **URL switches** for measuring:
    - `?perf` shows:
      - frame rate and GPU time per frame (from `EXT_disjoint_timer_query_webgl2`; GPU time is the useful number when the frame rate sits at the display's cap);
      - the tier, splats drawn and pixel ratio;
@@ -123,8 +128,5 @@ Record the numbers here. The tiers, the 45 fps threshold and the 600k phone cap 
    - Try gsplat's MCMC strategy with `cap_max` around 1M, or stronger opacity pruning.
    - Compare held-out PSNR against count with the existing A/B setup (`splat.train.holdout_every`).
 3. **SH degree of lod0.** Try SH2 and SH1 on real phone captures. If they look the same, ship the lower degree: a smaller download and less work per splat.
-4. **Match the trainer's blur.**
-   - The trainer's default is gsplat "classic" (`antialiased: false`). For that, Spark should use `preBlurAmount: 0.3, blurAmount: 0`.
-   - Spark's default `blurAmount: 0.3` is meant for anti-aliased training, and slightly dims fine detail.
-   - This needs a `splat.antialiased` flag in the manifest. It improves quality, not speed.
+4. **Done: match the trainer's blur** (`splat.antialiased`, above).
 5. **Tune the tiers on real devices** from the measurements above.

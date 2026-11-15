@@ -12,7 +12,8 @@ Not yet (needed before ``unlisted``/``public``, which this stage refuses until t
   or flag speech.
 - Render a thumbnail and a 5-second fly-through preview for globe pins; warm the CDN.
 
-Reads   splat/lods.json, poses/navigation.json, ingest/meta.json,
+Reads   splat/lods.json (its ``antialiased`` training mode becomes splat.antialiased, so
+        the viewer's blur matches), poses/navigation.json, ingest/meta.json,
         soundscape/scene.json (optional: without it the memory has no sound, since sound
         always comes from SATIE after separation and localization; the original
         recording is still listed as the ambient bed)
@@ -38,7 +39,7 @@ from pydantic import BaseModel
 
 from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.stagekit import StageError, StageIO, run_stage, write_json
-from memoryscapes_workers.visual import lod_tree
+from memoryscapes_workers.visual import lod_tree, splat_io
 
 STAGE = "publish"
 VERSION = "1"
@@ -110,6 +111,13 @@ def _publish(io: StageIO, cfg: PublishConfig, version: int, has_scene: bool,
                 raise StageError(STAGE, f"Couldn't build the streaming LoD tree: {exc}") from exc
             # Optional: the viewer falls back to the .spz levels.
             tree_note = str(exc)
+    if "antialiased" not in lods and lods.get("lods"):
+        # Splat outputs from before lods.json recorded the training mode: the .spz says.
+        try:
+            lods = {**lods, "antialiased": splat_io.spz_antialiased(
+                ctx.storage.read_bytes(ctx.key("splat", lods["lods"][0]["file"])))}
+        except (OSError, ValueError, KeyError):
+            pass
     manifest = build_manifest(ctx.memory_id, version=version, lods=lods, navigation=nav,
                               ingest_meta=meta, scene=scene, cfg=cfg,
                               has_audio=ctx.storage.exists(ctx.key("ingest", "audio.wav")),
@@ -207,6 +215,8 @@ def build_manifest(memory_id: str, *, version: int, lods: dict, navigation: dict
                                       for lod in lods["lods"]]}
     if rad is not None:
         splat["rad"] = rad
+    if lods.get("antialiased") is not None:
+        splat["antialiased"] = bool(lods["antialiased"])
     return {
         "id": memory_id,
         "version": version,

@@ -39,6 +39,10 @@
             "chunks": { "type": "array", "items": { "type": "string" } },
             "count": { "type": "integer", "description": "Splats in the tree, interior nodes included" }
           }
+        },
+        "antialiased": {
+          "type": "boolean",
+          "description": "Trained with anti-aliasing (Mip-Splatting style, gsplat's antialiased mode): the viewer then blurs with opacity compensation. Missing or false: classic 3DGS training, drawn with the classic fixed 0.3 px² dilation"
         }
       }
     },

@@ -212,6 +212,21 @@ export class QualityGovernor {
   }
 }
 
+/**
+ * Spark's 2D blur, matched to how the splat was trained (manifest `splat.antialiased`).
+ *
+ * Every rasterizer widens each projected Gaussian by about 0.3 px² so that tiny ones still
+ * cover a pixel. Classic 3DGS training (the trainer's default) adds it without touching
+ * opacity, so drawing it the same way (`preBlurAmount`) reproduces what training saw.
+ * Anti-aliased (Mip-Splatting) training scales opacity down to compensate, which is what
+ * Spark's `blurAmount` does. Spark's default (`blurAmount` 0.3) assumes anti-aliased
+ * training, so on a classic splat it dims and thins fine detail: thin wires, distant edges.
+ * A manifest without the flag is classic (memories trained before it was recorded).
+ */
+export function blurFor(antialiased: boolean | undefined): { preBlurAmount: number; blurAmount: number } {
+  return antialiased ? { preBlurAmount: 0, blurAmount: 0.3 } : { preBlurAmount: 0.3, blurAmount: 0 };
+}
+
 /** Mean without the slowest 10%. */
 export function trimmedMean(xs: readonly number[]): number {
   const s = [...xs].sort((a, b) => a - b).slice(0, Math.max(1, Math.ceil(xs.length * 0.9)));

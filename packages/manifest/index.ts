@@ -47,6 +47,10 @@ export interface MemoryManifest {
     /** The same splat as a Spark LoD tree for streaming (a chunked .rad from Spark's build-lod).
      * `chunks` are the files the header names, listed so the API stores them with the memory. */
     rad?: { url: string; chunks: string[]; count?: number };
+    /** Trained with anti-aliasing (gsplat's antialiased mode). Missing or false: classic
+     * 3DGS, which the viewer draws with the classic fixed dilation instead of Spark's
+     * opacity-compensated blur. */
+    antialiased?: boolean;
   };
   navigation?: {
     spawn?: Record<string, unknown>;

@@ -42,6 +42,7 @@ An iPhone spatial video (MV-HEVC, two lenses 17.7 mm apart) keeps both eyes:
 | `point_cloud.ply` | Trained Gaussians, standard 3DGS binary little-endian PLY: `x y z`, `f_dc_0..2`, optional `f_rest_*`, `opacity` (logit), `scale_0..2` (log), `rot_0..3` (quaternion w, x, y, z) |
 | `renders/<frame_id>.png` | The trained splat rendered from that keyframe's camera, at the frame's size or proportionally smaller. Used for side-by-side checks against `ingest/frames/`. |
 | `lods/lod<n>.spz` | Compressed deliverables for the viewer. The debugger lists them but doesn't parse them. |
+| `lods.json` | `{"order": "most detailed first", "format": "spz v3", "lods": [{"file", "count", "sh_degree", "bytes"}], "antialiased", "bounds", "cleanup"}`. `antialiased` is the training mode (gsplat `antialiased` vs classic): publish copies it into the manifest so the viewer's blur matches. |
 
 ## debug/ (examples only)
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  blurFor,
   deviceClass,
   parseOverrides,
   pickLods,
@@ -169,4 +170,10 @@ test("never past the lowest tier or above the highest", () => {
   assert.equal(run(g, clock, 100, 10).length, 0);
   assert.equal(new QualityGovernor(99).tier, TIERS.length - 1);
   assert.equal(new QualityGovernor(-3).tier, 0);
+});
+
+test("blur matches the training mode; a manifest without the flag is classic", () => {
+  assert.deepEqual(blurFor(false), { preBlurAmount: 0.3, blurAmount: 0 });
+  assert.deepEqual(blurFor(undefined), { preBlurAmount: 0.3, blurAmount: 0 });
+  assert.deepEqual(blurFor(true), { preBlurAmount: 0, blurAmount: 0.3 });
 });
