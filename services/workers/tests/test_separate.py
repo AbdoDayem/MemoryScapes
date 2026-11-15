@@ -1,5 +1,6 @@
 import numpy as np
 
+from memoryscapes_workers.audio.denoise import clean_recording
 from memoryscapes_workers.audio.tagging import TagResult
 from memoryscapes_workers.models import StemsIndex
 from memoryscapes_workers.stages import separate
@@ -54,7 +55,9 @@ def test_separate_stage_writes_consistent_multichannel_stems(ctx):
     stems = [read_wav(ctx.storage, s.key)[0] for s in saved.stems]
     ambient, _ = read_wav(ctx.storage, saved.ambient_key)
     mix_16 = read_wav(ctx.storage, ctx.key("ingest", "audio.wav"))[0]
-    np.testing.assert_allclose(sum(stems) + ambient, mix_16, atol=2e-3)  # 16-bit rounding
+    cleaned, report = clean_recording(mix_16, SR)
+    np.testing.assert_allclose(sum(stems) + ambient, cleaned, atol=2e-3)  # 16-bit rounding
+    assert saved.cleaning == report and saved.cleaning["highpass_hz"] == 60.0
 
     bird_stem = stems[0]
     # mostly the 440 Hz tone, and louder on the left channel like the recording
@@ -71,4 +74,18 @@ def test_separate_stage_with_nothing_detected_puts_everything_in_ambient(ctx):
     index = separate.run(ctx, tagger=FakeTagger({}), separator=FakeSeparator({}))
     assert index.stems == []
     ambient, _ = read_wav(ctx.storage, index.ambient_key)
+    cleaned, _ = clean_recording(read_wav(ctx.storage, ctx.key("ingest", "audio.wav"))[0], SR)
+    np.testing.assert_allclose(ambient, cleaned, atol=2e-3)
+    # identical channels: wind suppression can't apply, and says why
+    assert index.cleaning["wind"].startswith("skipped: the channels are near-identical")
+
+
+def test_cleaning_can_be_turned_off(ctx, monkeypatch):
+    mix = np.stack([tone(200) + tone(30, amp=0.1), tone(200) * 0.5 + tone(30, amp=0.1)])
+    write_wav(ctx.storage, ctx.key("ingest", "audio.wav"), mix, SR)
+    write_json(ctx.storage, ctx.key("ingest", "meta.json"), {"mic": {"channels": 2, "layout": "stereo"}})
+    monkeypatch.setenv("AUDIO_CLEAN", "false")
+    index = separate.run(ctx, tagger=FakeTagger({}), separator=FakeSeparator({}))
+    ambient, _ = read_wav(ctx.storage, index.ambient_key)
     np.testing.assert_allclose(ambient, read_wav(ctx.storage, ctx.key("ingest", "audio.wav"))[0], atol=2e-3)
+    assert index.cleaning == {"wind": "off", "highpass_hz": None}

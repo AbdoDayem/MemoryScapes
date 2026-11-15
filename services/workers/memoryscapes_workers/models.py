@@ -104,6 +104,10 @@ class StemsIndex:
     ambient_key: str
     tags: dict[str, float] = field(default_factory=dict)  # label -> max clip score
     dropped: list[dict[str, str]] = field(default_factory=list)  # [{"label", "reason"}]
+    # What cleaning did before separation (audio/denoise.py): highpass_hz, wind
+    # ("suppressed", "off" or why it was skipped), wind_like_frames, removed_db per band.
+    # Empty for memories separated before cleaning existed.
+    cleaning: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         d = asdict(self)
@@ -122,6 +126,7 @@ class StemsIndex:
             ambient_key=d["ambient_key"],
             tags=d.get("tags", {}),
             dropped=d.get("dropped", []),
+            cleaning=d.get("cleaning", {}),
         )
 
     def activity_at(self, stem: StemInfo, t: float) -> float:
