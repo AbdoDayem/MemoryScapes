@@ -50,7 +50,8 @@ Measured on one frame of a 1.5M-gaussian scene (MacBook Pro M1 Pro, Chrome, 3024
    - Anti-aliased training gets Spark's default `blurAmount: 0.3`, which compensates opacity.
    - Spark's default on a classic splat dims and thins fine detail. A manifest without the flag counts as classic.
    - This affects image quality, not speed.
-7. **URL switches** for measuring:
+7. **Nothing waits that doesn't have to.** three.js and Spark (2.9 MB minified) start downloading together as soon as the viewer mounts, alongside the manifest request. The tree's header check runs while they download. Before, the four ran one after another: manifest, three.js, Spark, header check. On the Mac dev server, the first chunk arrived at 1.25 s instead of 2.0 s, and the first splat showed at 1.4 s instead of 1.8–2.1 s. On a phone network each of those steps is a round trip or a download, so the saving should be larger.
+8. **URL switches** for measuring:
    - `?perf` shows:
      - frame rate and GPU time per frame (from `EXT_disjoint_timer_query_webgl2`; GPU time is the useful number when the frame rate sits at the display's cap);
      - the tier, splats drawn and pixel ratio;
