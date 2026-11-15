@@ -96,12 +96,17 @@ Compare `psnr` (held-out frames) and `depth_error_vs_sfm`. Also walk each result
 7. **Dense initialisation** from the stereo depth (back-projected points) for bland surfaces SfM misses.
 8. **Debugger.** Show the right-eye frames and the depth maps, and the stereo scale next to the alignment check.
 
-## Known issue elsewhere (audio)
+## Audio cleaning on iPhone recordings (fixed)
 
-The audio cleaning step (`audio/denoise.py`, PR #23) removes **3–5 dB of real sound at 0.5–2 kHz** on iPhone 16 Plus recordings, even with no wind.
-- **Cause:** the phone's processed stereo channels hardly agree above ~500 Hz, and the step reads that as wind.
-- **Workaround:** `AUDIO_CLEAN=false`.
-- **Fix, designed and measured but not built:**
-  - below 200 Hz, keep the current gain;
-  - above 200 Hz, apply it only in frames where the 50–200 Hz band shows wind: weight = clip((0.8 − mean coherent share) / 0.4, 0, 1), smoothed over 0.3 s, fading out by 1 kHz.
-  - **Measured:** the iPhone clips lost 0.0 dB at 0.5–2 kHz, and synthetic wind improved by +5.9 / +10.3 / +12.3 dB (light / medium / heavy).
+The audio cleaning step (`audio/denoise.py`, PR #23) removed **3–5 dB of real sound at 0.5–2 kHz** on iPhone 16 Plus recordings, even with no wind: the phone's processed stereo channels hardly agree above ~500 Hz, and the step read that as wind.
+
+Fixed as designed here:
+- below 200 Hz, the gain always applies;
+- above 200 Hz, only in frames where the 50–200 Hz band shows wind: weight = clip((0.8 − mean coherent share) / 0.4, 0, 1), smoothed over 0.3 s;
+- full strength up to 500 Hz, fading out by 1 kHz. A fade from 200 Hz fell short on wind that reaches 500 Hz.
+
+**Measured on the Windows machine:**
+- `IMG_9661.MOV` now loses 0.0 dB at 0.5–2 kHz, down from 5.2; two other phone clips lose 0.0, down from 2.7 and 1.2.
+- Synthetic 1/f wind still improves by +6.2 / +6.4 / +6.4 dB (light / medium / heavy), against +6.7 / +7.1 / +7.1 ungated.
+
+`AUDIO_CLEAN=false` is no longer needed.

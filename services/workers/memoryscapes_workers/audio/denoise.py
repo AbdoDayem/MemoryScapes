@@ -3,10 +3,15 @@
 1. High-pass at 60 Hz (zero phase): rumble and handling noise, with almost no audible loss.
 2. Wind (two-channel recordings): microphone wind is turbulence at each capsule, so it's
    uncorrelated between the mics, while real sound reaches both. Where the channels
-   disagree below ~1.6 kHz, that part is turned down (a Wiener gain from the coherent share
-   of the power: |cross-spectrum| / mean channel power). The same gain goes on both channels,
-   so the inter-channel cues localization needs are kept. Above ~1.6 kHz nothing changes:
-   there, real sound fields stop being coherent at phone mic spacings.
+   disagree, that part is turned down (a Wiener gain from the coherent share of the power:
+   |cross-spectrum| / mean channel power). The same gain goes on both channels, so the
+   inter-channel cues localization needs are kept.
+   - Below 200 Hz the gain always applies: there, real sound is coherent at phone mic
+     spacings and wind is loudest.
+   - Above 200 Hz it applies only in frames where the 50-200 Hz band shows wind: fully up to
+     500 Hz, fading out by 1 kHz. Phones process their stereo channels so that they hardly agree above
+     ~500 Hz even in still air, so an ungated gain there read every phone clip as wind:
+     iPhone recordings lost 3-5 dB of real sound at 0.5-2 kHz, with no wind at all.
 
 On a synthetic scene with mic wind (stereo, 12 cm), this improved SI-SDR by +4.7, +10.0
 and +12.1 dB for light, medium and heavy wind, and kept birdsong and speech detail intact.
@@ -23,13 +28,24 @@ from dataclasses import dataclass
 
 import numpy as np
 from scipy import signal
+from scipy.ndimage import uniform_filter1d
 
 
 @dataclass(frozen=True)
 class CleaningConfig:
     highpass_hz: float = 60.0  # 0 turns the high-pass off
     wind: bool = True
-    wind_max_hz: float = 800.0  # full effect below this, fading out by twice this
+    wind_full_hz: float = 200.0  # the gain always applies below this
+    # Above wind_full_hz the gain is gated (below), at full strength up to wind_fade_hz,
+    # then fading out by wind_max_hz.
+    wind_fade_hz: float = 500.0
+    wind_max_hz: float = 1000.0
+    # Wind gate, per frame, from the coherent share of the 50-200 Hz power:
+    # weight = clip((gate_coherent - share) / gate_width, 0, 1), smoothed over gate_smoothing_s.
+    gate_band_hz: tuple[float, float] = (50.0, 200.0)
+    gate_coherent: float = 0.8
+    gate_width: float = 0.4
+    gate_smoothing_s: float = 0.3
     gain_floor: float = 0.2  # turn wind down by at most ~14 dB
     smoothing_s: float = 0.15  # time constant of the spectral averages
     window_s: float = 0.064
@@ -60,7 +76,7 @@ def _suppress_block(x: np.ndarray, sr: int, cfg: CleaningConfig) -> tuple[np.nda
     kw = dict(fs=sr, nperseg=nper, noverlap=nper - hop)
     f, _, spec = signal.stft(x.astype(np.float32), **kw)
     left, right = spec[0], spec[1]
-    band = f < 2 * cfg.wind_max_hz  # only these bins can change
+    band = f < cfg.wind_max_hz  # only these bins can change
     alpha = float(np.exp(-hop / sr / cfg.smoothing_s))
     nb = int(band.sum())
     p_ll = np.zeros(nb); p_rr = np.zeros(nb); p_lr = np.zeros(nb, complex)
@@ -75,13 +91,31 @@ def _suppress_block(x: np.ndarray, sr: int, cfg: CleaningConfig) -> tuple[np.nda
         msc[:, t] = np.abs(p_lr) ** 2 / (p_ll * p_rr + 1e-20)
     ratio = signal.convolve2d(ratio, np.ones((3, 1)) / 3, mode="same", boundary="symm")
     gain = np.clip(ratio, cfg.gain_floor, 1.0)
-    fade = np.clip((f[band] - cfg.wind_max_hz) / cfg.wind_max_hz, 0.0, 1.0)[:, None]
-    spec[:, band] *= (fade + (1 - fade) * gain)[None].astype(spec.dtype)
+    spec[:, band] *= (1.0 - _strength(f[band], ratio, hop / sr, cfg) * (1.0 - gain))[None].astype(spec.dtype)
     _, y = signal.istft(spec, **kw)
     low = (f[band] >= 50) & (f[band] < 500)
     energy = (np.abs(lb[low]) ** 2 + np.abs(rb[low]) ** 2).sum(0)
     flags = (msc[low].mean(0) < 0.5) & (energy > np.median(energy))
     return y[..., : x.shape[-1]].astype(np.float32), flags
+
+
+def wind_gate(f: np.ndarray, ratio: np.ndarray, frame_s: float, cfg: CleaningConfig) -> np.ndarray:
+    """Per-frame wind weight (0..1) from the coherent share of the 50-200 Hz power."""
+    lo, hi = cfg.gate_band_hz
+    share = ratio[(f >= lo) & (f < hi)].mean(axis=0)
+    weight = np.clip((cfg.gate_coherent - share) / cfg.gate_width, 0.0, 1.0)
+    frames = max(1, int(round(cfg.gate_smoothing_s / frame_s)))
+    return uniform_filter1d(weight, frames, mode="nearest")
+
+
+def _strength(f: np.ndarray, ratio: np.ndarray, frame_s: float, cfg: CleaningConfig) -> np.ndarray:
+    """How much of the wind gain to apply, per bin and frame: all of it below
+    wind_full_hz; above, the frame's wind weight, fading linearly from wind_fade_hz to none
+    at wind_max_hz."""
+    span = max(cfg.wind_max_hz - cfg.wind_fade_hz, 1e-9)
+    fade = np.clip(1.0 - (f - cfg.wind_fade_hz) / span, 0.0, 1.0)[:, None]
+    gated = fade * wind_gate(f, ratio, frame_s, cfg)[None, :]
+    return np.where((f < cfg.wind_full_hz)[:, None], 1.0, gated)
 
 
 def suppress_wind(audio: np.ndarray, sr: int, cfg: CleaningConfig = CleaningConfig()) -> tuple[np.ndarray, float]:
