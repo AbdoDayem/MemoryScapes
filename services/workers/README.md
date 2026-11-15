@@ -162,6 +162,8 @@ This is the debugger's upload runner: the whole DAG for one memory, with progres
 
 The CPU defaults are set in `run.stage_config`: at most `--max-keyframes 120` keyframes and SIFT on the CPU. The splat trainer is `auto`, so on a machine without CUDA it uses `points`.
 
+**iPhone spatial video** (iPhone 15 Pro and later, iPhone 16 / 16 Plus): the pipeline keeps both eyes. It measures true scale from them, and adds right-eye cameras (plus stereo depth maps) for splat training. Status, measurements, the GPU A/B to run, and what still needs work are in [docs/SPATIAL_VIDEO.md](../../docs/SPATIAL_VIDEO.md). It needs ffmpeg 7.1 or newer.
+
 `examples/make_video.py park_walk out.mp4` renders an example memory to a video with stereo sound and known source positions, for testing the upload path.
 
 `examples/run_visual.py [scenario ...] [--steps 300]` makes **real-pipeline versions of the audio examples**, as `<scenario>_real` in `examples/out/`:

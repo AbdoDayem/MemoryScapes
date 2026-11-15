@@ -9,6 +9,14 @@ Reads  {memory_id}/ingest/frames/, meta.json
 Writes {memory_id}/poses/
     sparse/0/{cameras,images,points3D}.bin   undistorted PINHOLE model, in the world frame
     images/frame_*.jpg                        undistorted images matching sparse/0
+    images_right/frame_*_right.jpg            spatial video with a measured scale only: the
+                                              right eye, undistorted with the same lens model
+    stereo_right.json                         {baseline_m, disparity_offset_px, vertical_offset_px,
+                                               frames: [{frame_id, width, height, K, c2w, image}],
+                                               depth: {dir, scale, valid_fraction}}
+                                              the right-eye cameras (extra splat training views)
+    stereo_depth/frame_*.png                  per left frame: inverse depth (1/m x 10000) from the
+                                              stereo pair, 16-bit, 0 = unknown (splat depth loss)
     sparse_points.ply                         SfM points (xyz + rgb), world frame
     points3d.npy                              the same points, (N, 3) float32
     points3d_rgb.npy                          their colours, (N, 3) uint8
@@ -71,6 +79,10 @@ class PosesConfig(BaseModel):
     fixed_scale: float | None = None
     # Spatial (stereo) video: measure the scale from the two eyes (visual/stereo.py).
     stereo_scale: bool = True
+    # ...and export the right eye as extra cameras for splat training (needs that scale),
+    # with a stereo depth map per frame for the splat's depth loss.
+    export_right_eye: bool = True
+    stereo_depth: bool = True
     corridor_radius_m: float = 1.5
     use_gpu: bool = True  # SIFT on CUDA when the pycolmap build supports it
 
@@ -199,6 +211,133 @@ def shot_coverage(meta: dict, placed: set[str]) -> list[dict]:
     return out
 
 
+def _export_right_eye(out: Path, rec, model, right_dir: Path, baseline_m: float, fit,
+                      stereo_depth: bool = True) -> int:
+    """Right-eye cameras next to the (undistorted, world-frame) left ones: the same lens model
+    undistorts the right frames, each camera sits baseline_m along its left partner's +x (the
+    world is metric once the scale came from the stereo pair), and the measured constant
+    shifts between the views move its principal point. Returns how many were written."""
+    import cv2
+
+    from memoryscapes_workers.visual import video
+
+    if not right_dir.is_dir():
+        return 0
+    raw_by_name = {im.name: im for im in rec.images.values()}
+    (out / "images_right").mkdir()
+    maps: dict[int, tuple] = {}
+    frames = []
+    for im in sorted((im for im in model.images.values() if im.has_pose), key=lambda im: im.name):
+        raw = raw_by_name.get(im.name)
+        src = right_dir / im.name
+        if raw is None or not src.exists():
+            continue
+        cam_u, cam_r = model.cameras[im.camera_id], rec.cameras[raw.camera_id]
+        k_u, k_r = cam_u.calibration_matrix(), cam_r.calibration_matrix()
+        if raw.camera_id not in maps:
+            p = list(cam_r.params)
+            dist = {"SIMPLE_RADIAL": [p[3], 0, 0, 0] if len(p) > 3 else [0, 0, 0, 0],
+                    "RADIAL": [p[3], p[4], 0, 0] if len(p) > 4 else [0, 0, 0, 0],
+                    "OPENCV": p[4:8] if len(p) >= 8 else [0, 0, 0, 0]}.get(cam_r.model.name, [0, 0, 0, 0])
+            maps[raw.camera_id] = cv2.initUndistortRectifyMap(
+                k_r, np.array(dist, float), None, k_u, (int(cam_u.width), int(cam_u.height)), cv2.CV_32FC1)
+        img = video.imread_rgb(src)
+        undist = cv2.remap(img, *maps[raw.camera_id], cv2.INTER_LINEAR)
+        name = f"{Path(im.name).stem}_right.jpg"
+        video.imwrite_rgb(out / "images_right" / name, undist, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        k = k_u.copy()
+        k[0, 2] -= fit.disparity_offset_px * k_u[0, 0] / k_r[0, 0]  # x_right = x_left - fB/z - d0
+        k[1, 2] += fit.vertical_offset_px * k_u[1, 1] / k_r[1, 1]   # y_right = y_left + dy
+        c2w = np.eye(4)
+        c2w[:3, :] = im.cam_from_world().inverse().matrix()
+        c2w[:3, 3] += c2w[:3, 0] * baseline_m  # the right lens, along the left camera's +x
+        frames.append({"frame_id": Path(name).stem, "left_frame_id": Path(im.name).stem,
+                       "width": int(cam_u.width), "height": int(cam_u.height),
+                       "K": np.round(k, 6).tolist(), "c2w": np.round(c2w, 6).tolist(),
+                       "image": f"images_right/{name}"})
+    depth = _stereo_depth(out, model, frames, baseline_m, fit) if stereo_depth else None
+    write_json(out / "stereo_right.json", {
+        "baseline_m": baseline_m, "disparity_offset_px": round(fit.disparity_offset_px, 3),
+        "vertical_offset_px": round(fit.vertical_offset_px, 3), "frames": frames, "depth": depth})
+    log.info("[%s] right eye: %d extra cameras for splat training%s", STAGE, len(frames),
+             f", stereo depth on {100 * depth['valid_fraction']:.0f}% of pixels" if depth else "")
+    return len(frames)
+
+
+INV_DEPTH_SCALE = 10_000.0  # stereo_depth PNGs: inverse depth in 1/m x this, 0 = unknown
+
+
+def _stereo_depth(out: Path, model, frames: list[dict], baseline_m: float, fit, max_disp: int = 64,
+                  min_disp: float = 1.0) -> dict:
+    """Dense inverse depth per left frame from the undistorted stereo pair (OpenCV SGBM).
+
+    The right image is first shifted by the measured view offsets, so rows line up and zero
+    disparity means infinity. Pixels must pass a left-right consistency check. Any remaining
+    constant disparity bias is measured against the reconstruction's own 3D points (on a
+    sample of frames) and removed, so the depth agrees with the geometry it supervises.
+    On the iPhone 16 Plus night clip: ~50% of pixels, +-0.9 px of noise (dark footage), and
+    a +0.5 px bias that this removes."""
+    import cv2
+
+    from memoryscapes_workers.visual import video
+
+    (out / "stereo_depth").mkdir()
+    block = 9
+    sgbm = cv2.StereoSGBM_create(minDisparity=0, numDisparities=max_disp, blockSize=block,
+                                 P1=8 * block * block, P2=32 * block * block, uniquenessRatio=15,
+                                 speckleWindowSize=100, speckleRange=2, mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY)
+    left_by_id = {Path(im.name).stem: im for im in model.images.values()}
+    points = np.array([p.xyz for p in model.points3D.values()], float)
+
+    def disparity(fr: dict) -> tuple[np.ndarray, np.ndarray, object]:
+        im = left_by_id[fr["left_frame_id"]]
+        left = cv2.cvtColor(video.imread_rgb(out / "images" / im.name), cv2.COLOR_RGB2GRAY)
+        right = cv2.cvtColor(video.imread_rgb(out / fr["image"]), cv2.COLOR_RGB2GRAY)
+        k, k_left = np.array(fr["K"]), model.cameras[im.camera_id].calibration_matrix()
+        shift = np.float32([[1, 0, k_left[0, 2] - k[0, 2]], [0, 1, k_left[1, 2] - k[1, 2]]])
+        right = cv2.warpAffine(right, shift, (right.shape[1], right.shape[0]), flags=cv2.INTER_LINEAR,
+                               borderMode=cv2.BORDER_REPLICATE)
+        d_left = sgbm.compute(left, right).astype(np.float32) / 16.0
+        d_right = cv2.flip(sgbm.compute(cv2.flip(right, 1), cv2.flip(left, 1)), 1).astype(np.float32) / 16.0
+        w = d_left.shape[1]
+        xs = np.arange(w)[None, :] - np.round(d_left).astype(int)
+        back = np.take_along_axis(d_right, np.clip(xs, 0, w - 1), axis=1)
+        ok = (d_left >= min_disp) & (xs >= 0) & (np.abs(d_left - back) <= 1.0)
+        return d_left, ok, im
+
+    # Bias against the reconstruction's 3D points (3-15 m, where stereo is informative).
+    diffs = []
+    for fr in frames[:: max(1, len(frames) // 15)]:
+        d, ok, im = disparity(fr)
+        k = model.cameras[im.camera_id].calibration_matrix()
+        m = im.cam_from_world().matrix()  # 3x4
+        xc = points @ m[:, :3].T + m[:, 3]
+        z = xc[:, 2]
+        uv = (k @ xc.T).T[:, :2] / np.maximum(z[:, None], 1e-9)
+        m = (z > 3) & (z < 15) & (uv[:, 0] >= 0) & (uv[:, 0] < d.shape[1] - 1) & (uv[:, 1] >= 0) & (uv[:, 1] < d.shape[0] - 1)
+        u, v = np.round(uv[m]).astype(int).T
+        has = ok[v, u]
+        diffs.append(d[v, u][has] - k[0, 0] * baseline_m / z[m][has])
+    all_diffs = np.concatenate(diffs) if diffs else np.zeros(0)
+    bias = float(np.median(all_diffs)) if len(all_diffs) >= 100 else 0.0
+
+    valid_total = pixels_total = 0
+    for fr in frames:
+        d, ok, im = disparity(fr)
+        k = model.cameras[im.camera_id].calibration_matrix()
+        d = d - bias
+        ok &= d >= min_disp
+        inv_depth = np.where(ok, d / (k[0, 0] * baseline_m), 0.0)  # 1/m
+        cv2.imwrite(str(out / "stereo_depth" / f"{fr['left_frame_id']}.png"),
+                    np.clip(inv_depth * INV_DEPTH_SCALE, 0, 65535).astype(np.uint16))
+        valid_total += int(ok.sum())
+        pixels_total += ok.size
+    noise = float(np.median(np.abs(all_diffs - bias))) if len(all_diffs) else None
+    return {"dir": "stereo_depth", "scale": INV_DEPTH_SCALE, "units": "1/m",
+            "valid_fraction": round(valid_total / max(1, pixels_total), 4),
+            "bias_removed_px": round(bias, 3), "noise_px": None if noise is None else round(noise, 3)}
+
+
 def _stereo_scale(io: StageIO, rec, meta: dict, ingest_dir: Path, image_dir: Path):
     """Metric scale from a spatial video's right-eye frames, or None (not stereo, or the
     measurement was too weak to trust)."""
@@ -290,6 +429,11 @@ def _poses(io: StageIO, cfg: PosesConfig) -> dict:
             "image_key": io.ctx.key(STAGE, f"images/{im.name}"),
         })
     write_json(out / "cameras.json", frames)
+    right_eye = None
+    if stereo_scale is not None and cfg.export_right_eye:
+        st_meta = meta.get("stereo") or {}
+        right_eye = _export_right_eye(out, rec, model, ingest_dir / st_meta.get("right_frames", "frames_right"),
+                                      float(st_meta["baseline_m"]), stereo_scale, stereo_depth=cfg.stereo_depth)
     path = []
     for f, c2w in zip(frames, c2ws, strict=True):
         pos, quat = al.camera_to_threejs(c2w)
@@ -315,6 +459,7 @@ def _poses(io: StageIO, cfg: PosesConfig) -> dict:
         "mean_track_length": round(float(model.compute_mean_track_length()), 2),
         "path_length_m": round(float(np.linalg.norm(np.diff([c[:3, 3] for c in c2ws], axis=0), axis=1).sum()), 2),
         "scene_extent_m": np.round(np.percentile(world_pts, 98, axis=0) - np.percentile(world_pts, 2, axis=0), 2).tolist(),
+        "right_eye_cameras": right_eye or 0,
     }
     coverage = shot_coverage(meta, {im.name for im in images})
     write_json(out / "alignment.json", {**align.to_dict(), "stats": stats, "mapper": mapper_used,

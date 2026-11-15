@@ -57,10 +57,11 @@ def test_disparity_is_measured_to_a_fraction_of_a_pixel():
     left = _texture()
     right = _right_eye(left, lambda x: np.full_like(x, 6.3))
     pts = np.array([[x, y] for x in range(120, 600, 40) for y in range(40, 320, 40)], float)
-    disp, score = stereo.measure_disparity(left, right, pts)
+    disp, score, vert = stereo.measure_disparity(left, right, pts)
     ok = np.isfinite(disp)
     assert ok.mean() > 0.9 and np.all(score[ok] > 0.85)
     assert np.median(np.abs(disp[ok] - 6.3)) < 0.15
+    assert np.median(vert[ok]) == pytest.approx(-1.0, abs=0.15)  # the right eye sits 1 px higher
     flat = np.full_like(left, 128)
     assert np.isnan(stereo.measure_disparity(flat, flat, pts)[0]).all()  # nothing to match
 

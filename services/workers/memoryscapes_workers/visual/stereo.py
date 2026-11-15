@@ -27,24 +27,29 @@ class StereoScale:
     frames: int
     disparity_offset_px: float  # the fit's intercept (a constant shift between the views)
     spread: float  # robust relative spread of the per-point scale estimates
+    vertical_offset_px: float = 0.0  # median y_right - y_left of the matched points
 
     def to_dict(self) -> dict:
         return {"scale": round(self.scale, 6), "confidence": round(self.confidence, 3),
                 "points": self.points, "frames": self.frames,
-                "disparity_offset_px": round(self.disparity_offset_px, 3), "spread": round(self.spread, 3)}
+                "disparity_offset_px": round(self.disparity_offset_px, 3), "spread": round(self.spread, 3),
+                "vertical_offset_px": round(self.vertical_offset_px, 3)}
 
 
 def measure_disparity(left: np.ndarray, right: np.ndarray, points: np.ndarray, *, max_disp: int = 48,
-                      patch: int = 11, dy: int = 3, min_score: float = 0.85) -> tuple[np.ndarray, np.ndarray]:
+                      patch: int = 11, dy: int = 3, min_score: float = 0.85
+                      ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Disparity (left x - right x, px, sub-pixel) of each (x, y) point of the left image,
     found by normalised cross-correlation along the same row (+-dy rows) of the right image.
-    Returns (disparity, score); disparity is NaN where the match is weak or ambiguous."""
+    Returns (disparity, score, vertical offset y_right - y_left); NaN where the match is weak
+    or ambiguous."""
     import cv2
 
     h, w = left.shape
     r = patch // 2
     disp = np.full(len(points), np.nan)
     score = np.zeros(len(points))
+    vert = np.full(len(points), np.nan)
     for k, (x, y) in enumerate(np.round(points).astype(int)):
         if x - r - max_disp - 2 < 0 or x + r + 2 >= w or y - r - dy < 0 or y + r + dy >= h:
             continue
@@ -63,7 +68,13 @@ def measure_disparity(left: np.ndarray, right: np.ndarray, points: np.ndarray, *
         # col 0 is the right-image window's start (disparity max_disp); x decreases with d
         disp[k] = max_disp - (col + sub)
         score[k] = best
-    return disp, score
+        sub_y = 0.0
+        if 0 < row < res.shape[0] - 1:
+            a, b, c = res[row - 1, col], res[row, col], res[row + 1, col]
+            denom = a - 2 * b + c
+            sub_y = 0.5 * (a - c) / denom if denom < 0 else 0.0
+        vert[k] = row + sub_y - dy
+    return disp, score, vert
 
 
 def fit_scale(disparity: np.ndarray, z_colmap: np.ndarray, fx: np.ndarray, baseline_m: float,
@@ -114,7 +125,7 @@ def scale_from_reconstruction(rec, left_dir, right_dir, baseline_m: float, *, ma
         return None
     step = max(1, len(images) // max_frames)
     rng = np.random.default_rng(0)
-    all_d, all_z, all_f = [], [], []
+    all_d, all_z, all_f, all_v = [], [], [], []
     frames = 0
     for im in images[::step]:
         lp, rp = left_dir / im.name, right_dir / im.name
@@ -132,15 +143,18 @@ def scale_from_reconstruction(rec, left_dir, right_dir, baseline_m: float, *, ma
         pose = im.cam_from_world()
         xy = np.array([p.xy for p in obs])
         z = np.array([(pose * rec.points3D[p.point3D_id].xyz)[2] for p in obs])
-        disp, _ = measure_disparity(left, right, xy)
+        disp, _, vert = measure_disparity(left, right, xy)
         fx = float(rec.cameras[im.camera_id].calibration_matrix()[0, 0])
         all_d.append(disp)
         all_z.append(z)
         all_f.append(np.full(len(z), fx))
+        all_v.append(vert)
         frames += 1
     if not all_d:
         return None
     fit = fit_scale(np.concatenate(all_d), np.concatenate(all_z), np.concatenate(all_f), baseline_m)
     if fit is not None:
         fit.frames = frames
+        v = np.concatenate(all_v)
+        fit.vertical_offset_px = float(np.nanmedian(v)) if np.isfinite(v).any() else 0.0
     return fit

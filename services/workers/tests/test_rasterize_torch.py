@@ -206,3 +206,29 @@ def test_info_feeds_gsplat_default_strategy():
     seen = (info["radii"][0] > 0).all(dim=-1)
     assert torch.equal(state["count"] > 0, seen)
     assert (state["grad2d"][seen] > 0).any()
+
+
+def test_expected_depth_render_mode():
+    """RGB+ED: a 4th channel with the alpha-weighted camera depth, like gsplat's."""
+    viewmat, K = camera()
+    one = {"means": torch.tensor([[0.0, 0.0, 3.0]]), "quats": torch.tensor([[1.0, 0, 0, 0]]),
+           "scales": torch.full((1, 3), 0.6), "opacities": torch.tensor([0.9]), "colors": torch.ones(1, 3)}
+    out, alpha, _ = rt.rasterization(**one, viewmats=viewmat[None], Ks=K[None], width=W, height=H,
+                                     render_mode="RGB+ED")
+    assert out.shape == (1, H, W, 4)
+    covered = alpha[0, ..., 0] > 0.05
+    assert torch.allclose(out[0, ..., 3][covered], torch.tensor(3.0), atol=1e-4)  # one surface at z = 3
+    rgb_only, _, _ = rt.rasterization(**one, viewmats=viewmat[None], Ks=K[None], width=W, height=H)
+    assert torch.allclose(out[0, ..., :3], rgb_only[0])  # the colours are unchanged
+    # Two overlapping surfaces: the depth lies between them, nearer the front one.
+    two = {k: torch.cat([v, v]) for k, v in one.items()}
+    two["means"] = torch.tensor([[0.0, 0.0, 2.0], [0.0, 0.0, 6.0]])
+    out2, _, _ = rt.rasterization(**two, viewmats=viewmat[None], Ks=K[None], width=W, height=H,
+                                  render_mode="RGB+ED")
+    centre = out2[0, H // 2, W // 2, 3]
+    assert 2.0 < centre < 4.0
+    # and it carries gradients back to the positions
+    g = {k: v.clone().requires_grad_(k == "means") for k, v in one.items()}
+    o, _, _ = rt.rasterization(**g, viewmats=viewmat[None], Ks=K[None], width=W, height=H, render_mode="RGB+ED")
+    o[0, ..., 3].sum().backward()
+    assert g["means"].grad is not None and g["means"].grad[0, 2] > 0

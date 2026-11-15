@@ -88,7 +88,7 @@ def _splat(io: StageIO, cfg: SplatConfig) -> dict:
     from memoryscapes_workers.visual import splat_io, splat_post
     from memoryscapes_workers.visual.train import get_trainer, load_scene
 
-    scene = load_scene(io.input_dir("poses"))
+    scene = load_scene(io.input_dir("poses"), stereo_views=cfg.train.stereo_views)
     if len(scene.points) < 100:
         raise StageError(STAGE, f"Only {len(scene.points)} SfM points; too few to initialize.")
     out = io.out_dir
