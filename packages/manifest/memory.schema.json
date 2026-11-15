@@ -27,18 +27,16 @@
           "items": {
             "type": "object",
             "required": ["url"],
-            "properties": { "url": { "type": "string" }, "count": { "type": "integer" } }
+            "properties": {
+              "url": { "type": "string" },
+              "count": { "type": "integer" },
+              "rad": { "$ref": "#/$defs/lodTree", "description": "This level as a Spark LoD tree for streaming (lods[0] for desktops, lods[1] for phones)" }
+            }
           }
         },
         "rad": {
-          "type": "object",
-          "description": "The same splat as a Spark LoD tree for streaming: a chunked .rad header (Spark's build-lod) and the chunk files it names, in the same folder",
-          "required": ["url", "chunks"],
-          "properties": {
-            "url": { "type": "string" },
-            "chunks": { "type": "array", "items": { "type": "string" } },
-            "count": { "type": "integer", "description": "Splats in the tree, interior nodes included" }
-          }
+          "$ref": "#/$defs/lodTree",
+          "description": "Older manifests: the tree of lods[0]. Newer ones put each level's tree on the level (lods[i].rad)"
         },
         "antialiased": {
           "type": "boolean",
@@ -119,6 +117,18 @@
         "captured_at": { "type": "string", "format": "date-time" },
         "visibility": { "enum": ["private", "unlisted", "public"] },
         "owner": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "lodTree": {
+      "type": "object",
+      "description": "A splat as a Spark LoD tree for streaming: a chunked .rad header (Spark's build-lod) and the chunk files it names, in the same folder",
+      "required": ["url", "chunks"],
+      "properties": {
+        "url": { "type": "string" },
+        "chunks": { "type": "array", "items": { "type": "string" } },
+        "count": { "type": "integer", "description": "Splats in the tree, interior nodes included" }
       }
     }
   }

@@ -6,8 +6,8 @@ import {
   deviceClass,
   parseOverrides,
   pickLods,
+  pickTree,
   QualityGovernor,
-  streamsTree,
   TIERS,
   trimmedMean,
   type GovernorOptions,
@@ -64,14 +64,27 @@ test("URL overrides", () => {
   assert.deepEqual(parseOverrides("?stream=0"), { perf: false, stream: false });
 });
 
-test("desktops stream the LoD tree, phones load the smaller .spz levels", () => {
+test("each device streams the tree of its top level: lod0's on desktops, lod1's on phones", () => {
   const none = parseOverrides("");
-  assert.equal(streamsTree("desktop", true, none), true);
-  assert.equal(streamsTree("mobile", true, none), false);
-  assert.equal(streamsTree("desktop", false, none), false); // memories published before trees
-  assert.equal(streamsTree("mobile", true, parseOverrides("?stream=1")), true);
-  assert.equal(streamsTree("desktop", true, parseOverrides("?stream=0")), false);
-  assert.equal(streamsTree("desktop", true, parseOverrides("?lod=0&stream=1")), false); // ?lod means .spz
+  const tree = (n: number) => ({ url: `lod${n}-lod.rad` });
+  const both = { lods: LODS.map((l, n) => (n < 2 ? { ...l, rad: tree(n) } : l)) };
+  assert.deepEqual(pickTree(both, "desktop", none), { tree: tree(0), level: 0 });
+  assert.deepEqual(pickTree(both, "mobile", none), { tree: tree(1), level: 1 });
+  assert.equal(pickTree({ lods: LODS }, "desktop", none), undefined); // memories published before trees
+  assert.equal(pickTree({ lods: [] }, "desktop", none), undefined);
+  // Older manifests: one tree, lod0's, as splat.rad. Phones never stream it unasked.
+  const older = { lods: LODS, rad: tree(0) };
+  assert.deepEqual(pickTree(older, "desktop", none), { tree: tree(0), level: 0 });
+  assert.equal(pickTree(older, "mobile", none), undefined);
+  assert.deepEqual(pickTree(older, "mobile", parseOverrides("?stream=1")), { tree: tree(0), level: 0 });
+  assert.equal(pickTree(both, "desktop", parseOverrides("?stream=0")), undefined);
+  assert.equal(pickTree(both, "desktop", parseOverrides("?lod=0&stream=1")), undefined); // ?lod means .spz
+});
+
+test("?device tries the other device's path", () => {
+  assert.equal(parseOverrides("?device=mobile").device, "mobile");
+  assert.equal(parseOverrides("?device=desktop").device, "desktop");
+  assert.equal(parseOverrides("?device=tv").device, undefined);
 });
 
 test("tiers get cheaper on every lever", () => {

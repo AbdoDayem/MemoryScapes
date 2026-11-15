@@ -29,7 +29,7 @@ import { getMemory, type MemoryResponse } from "@/lib/api";
 import { assetResolver } from "./assets";
 import { createGpuTimer } from "./gpuTimer";
 import { asWalkable, clampToWalkable, samplePath, type CapturePath } from "./navigation";
-import { blurFor, deviceClass, parseOverrides, pickLods, QualityGovernor, START_TIER, streamsTree, TIERS } from "./renderQuality";
+import { blurFor, deviceClass, parseOverrides, pickLods, pickTree, QualityGovernor, START_TIER, TIERS } from "./renderQuality";
 import { failureSummary, pollAction, stageRows } from "./status";
 
 type Phase = "loading" | "processing" | "ready" | "failed" | "error";
@@ -278,7 +278,7 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
   const resolve = assetResolver(assetBase, window.location.href);
 
   const overrides = parseOverrides(window.location.search);
-  const device = deviceClass(navigator);
+  const device = overrides.device ?? deviceClass(navigator);
 
   const renderer = new THREE.WebGLRenderer({ antialias: false });
   renderer.setSize(el.clientWidth, el.clientHeight);
@@ -335,13 +335,13 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
     debug.memoryscapesViewer = { renderer, scene, camera, spark, setTier };
   }
 
-  // ---- the splat. On desktops, streamed from its LoD tree (.rad, built by the publish
-  // stage) when the memory has one: the first chunk is a coarse view of everything, and
-  // Spark fetches the detail the view needs. Otherwise the .spz LODs, coarsest first, each
-  // replacing the previous when loaded; the last (most detailed for this device) becomes a
-  // LoD tree in the browser. Either way Spark draws a splat budget.
-  const rad = streamsTree(device, !!manifest.splat.rad, overrides) ? manifest.splat.rad : undefined;
-  const streamTree = async (tree: NonNullable<typeof rad>): Promise<boolean> => {
+  // ---- the splat. Streamed from a LoD tree (.rad, built by the publish stage) when the
+  // most detailed level this device takes has one (lod0 on desktops, lod1 on phones): the
+  // first chunk is a coarse view of everything, and Spark fetches the detail the view
+  // needs. Otherwise the .spz LODs, coarsest first, each replacing the previous when
+  // loaded; the last becomes a LoD tree in the browser. Either way Spark draws a splat budget.
+  const picked = pickTree(manifest.splat, device, overrides);
+  const streamTree = async ({ tree, level }: NonNullable<typeof picked>): Promise<boolean> => {
     const url = resolve(tree.url);
     hooks.setLodStatus("Streaming splat…");
     // A streamed mesh is "initialized" before fetching anything: check the header first.
@@ -368,15 +368,15 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
     }
     current = mesh;
     measuring = true;
-    const count = manifest.splat.lods[0]?.count; // the tree's own count includes interior nodes
+    const count = manifest.splat.lods[level]?.count; // the tree's own count includes interior nodes
     hooks.setLodStatus(`${count ? count.toLocaleString() + " gaussians" : "Splat"}, streamed`);
     return true;
   };
 
   const lods = pickLods(manifest.splat.lods, device, overrides.lod);
   (async () => {
-    if (rad && (await streamTree(rad).catch(() => false))) return;
-    if (rad) console.warn("Couldn't stream the splat's LoD tree; loading its .spz levels instead.");
+    if (picked && (await streamTree(picked).catch(() => false))) return;
+    if (picked) console.warn("Couldn't stream the splat's LoD tree; loading its .spz levels instead.");
     for (const [i, lod] of lods.entries()) {
       hooks.setLodStatus(`Loading splat ${i + 1}/${lods.length}${lod.count ? ` (${lod.count.toLocaleString()} gaussians)` : ""}…`);
       const isTree = i === lods.length - 1;

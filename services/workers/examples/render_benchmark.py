@@ -7,8 +7,9 @@ No training: the gaussians are placed on a ground plane, two facades, boxes and 
 shell, with sizes like a trained outdoor capture's. The LODs come from the splat stage's
 own `DEFAULT_LODS` and `make_lod`, and a publish manifest is written, so the API and viewer
 load it like a real memory: open /memories/render_bench?perf (docs/RENDER_SPEED.md). When
-Spark's build-lod is installed, the streaming LoD tree is built too, as publish does
-(add &stream=0 to the address to compare without it).
+Spark's build-lod is installed, the streaming LoD trees of lod0 (desktops) and lod1 (phones)
+are built too, as publish does (add &stream=0 to the address to compare without them, and
+&device=mobile to try the phone path on a desktop).
 """
 
 from __future__ import annotations
@@ -92,22 +93,22 @@ def main() -> None:
         lods.append({"url": f"splat/lods/lod{i}.spz", "count": len(lod)})
         print(f"lod{i}: {len(lod):,} gaussians, SH{lod.sh_degree}, {size / 1e6:.1f} MB")
 
-    rad = None
     tool = lod_tree.find_tool()
     if tool:
-        tree = lod_tree.build(tool, out / "splat" / "lods" / "lod0.spz", out / "publish" / "lod")
-        rad = {"url": f"publish/lod/{tree.header}", "chunks": [f"publish/lod/{c}" for c in tree.chunks]}
-        if tree.count:
-            rad["count"] = tree.count
-        print(f"LoD tree: {len(tree.chunks)} chunks, {tree.bytes / 1e6:.1f} MB")
+        for n in (0, 1):  # as publish's default lod_tree_levels
+            tree = lod_tree.build(tool, out / "splat" / "lods" / f"lod{n}.spz", out / "publish" / "lod",
+                                  name=f"lod{n}")
+            lods[n]["rad"] = {"url": f"publish/lod/{tree.header}", "chunks": [f"publish/lod/{c}" for c in tree.chunks],
+                              **({"count": tree.count} if tree.count else {})}
+            print(f"lod{n} LoD tree: {len(tree.chunks)} chunks, {tree.bytes / 1e6:.1f} MB")
     else:
-        print("no LoD tree: build-lod isn't installed (deploy/setup.py)")
+        print("no LoD trees: build-lod isn't installed (deploy/setup.py)")
 
     manifest = {
         "id": args.id,
         "version": 7,
         "coord_frame": {"units": "meters", "up": "+y"},
-        "splat": {"lods": lods, **({"rad": rad} if rad else {})},
+        "splat": {"lods": lods},
         "navigation": {
             "spawn": {"position": [0, 1.6, 2], "look_at": [0, 1.6, -10]},
             "walkable_bounds": {"type": "aabb", "min": [-5, 0, -38], "max": [5, 4, 4]},
