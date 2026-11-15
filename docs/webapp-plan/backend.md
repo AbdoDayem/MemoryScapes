@@ -38,6 +38,7 @@ environment or `.env`:
 | `WORKERS_PYTHON` | `<repo>/services/workers/.venv/bin/python` | Starting the pipeline |
 | `DEV_USER_ID` | `usr_dev` | Owner of every memory until real login |
 | `MAX_UPLOAD_MB` | `500` | Upload size limit |
+| `MAX_VIDEO_SECONDS` | `120` | Longest video the pipeline accepts (the upload page says the same) |
 | `CORS_ORIGINS` | `http://localhost:3000` | The web app's origin (already read in `main.py`) |
 
 `STORAGE_BACKEND`, `STORAGE_ROOT` and `CORS_ORIGINS` are already read directly from the
@@ -179,7 +180,7 @@ Exists: `{"status": "ok"}`.
 `POST /process` runs, in the background:
 
 ```
-{WORKERS_PYTHON} -m memoryscapes_workers.run --root {STORAGE_ROOT} --memory {id}
+{WORKERS_PYTHON} -m memoryscapes_workers.run --root {STORAGE_ROOT} --memory {id} --max-seconds {MAX_VIDEO_SECONDS}
 ```
 
 with working directory `services/workers`, through `subprocess.Popen`, stdout and stderr
@@ -191,9 +192,11 @@ sent to `/dev/null` (the runner writes its own `job/log.txt`).
 - Keep a dict `{memory_id: Popen}` so only one run per memory happens at a time.
 - A background thread watches for the run to finish (`Popen.wait()`): read the final
   `status.json`, call `db.upsert_jobs` and `db.set_status(ready|failed)`.
-  How much of the video is processed is the runner's own default (`--max-seconds`, 60 s
-  today); the API doesn't override it. The runner's stdout/stderr go to
-  `job/runner-output.txt`, so a run that dies before logging still has a reason.
+  The runner's stdout/stderr go to `job/runner-output.txt`, so a run that dies before
+  logging still has a reason.
+- The longest video accepted is `MAX_VIDEO_SECONDS` (120 s, as the upload page says),
+  passed as `--max-seconds`; longer videos fail at ingest. The runner's own default (60 s)
+  is for quick debugger runs.
 - On API startup, any memory still `processing` with no live process is marked `failed`
   ("interrupted").
 - `ffmpeg` must be on `PATH` (installed with Homebrew).

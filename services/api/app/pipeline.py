@@ -10,8 +10,8 @@ The pipeline itself belongs to the workers (services/workers). This module only:
    soundscape into ``soundscapes`` (app/soundscapes.py), stores a ready memory's files in
    ``memory_files`` (app/memory_files.py), and sets the memory to ``ready`` or ``failed``.
 
-How much of the video is processed is the runner's own default (``--max-seconds``); we
-don't override it. See docs/webapp-plan/backend.md § Starting the pipeline.
+The longest video accepted is ``MAX_VIDEO_SECONDS`` (default 120, as the upload page
+says), passed to the runner as ``--max-seconds``. See docs/webapp-plan/backend.md § Starting the pipeline.
 """
 
 from __future__ import annotations
@@ -53,9 +53,13 @@ class AlreadyRunning(Exception):
 
 
 def build_command(memory_id: str, root: Path) -> list[str]:
-    """The runner command. Tests replace this with a fake runner."""
-    return [get_settings().workers_python, "-m", "memoryscapes_workers.run",
-            "--root", str(root), "--memory", memory_id]
+    """The runner command. Tests replace this with a fake runner.
+
+    ``--max-seconds`` is the site's own limit: the runner's default (60 s) is for quick
+    debugger runs, and with it every 1-2 minute upload failed at ingest."""
+    s = get_settings()
+    return [s.workers_python, "-m", "memoryscapes_workers.run",
+            "--root", str(root), "--memory", memory_id, "--max-seconds", str(s.max_video_seconds)]
 
 
 def is_running(memory_id: str) -> bool:

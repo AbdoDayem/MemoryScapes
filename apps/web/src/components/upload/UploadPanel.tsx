@@ -17,7 +17,7 @@ import { stageRows } from "@/components/viewer/status";
 const VIDEO_EXTS = [".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".3gp"];
 const AUDIO_EXTS = [".wav", ".flac", ".m4a", ".mp3", ".aac", ".ogg", ".opus", ".caf", ".aiff", ".aif"];
 const MAX_MB = 500;
-const MAX_SECONDS = 120;
+const MAX_SECONDS = 120; // the API's MAX_VIDEO_SECONDS (services/api/app/settings.py); keep the two equal
 // The API's rule (Python's \w includes letters and digits in any script).
 const FILE_NAME = /^[\p{L}\p{N}_.\- ()]{1,128}$/u;
 
