@@ -219,3 +219,33 @@ def test_stereo_depth_supervision_runs_and_scores_geometry(scene):
     assert supervised.metrics["depth_supervised_images"] == 8 and plain.metrics["depth_supervised_images"] == 0
     assert supervised.metrics["depth_error_vs_sfm"] is not None
     assert supervised.metrics["depth_error_vs_sfm"] <= plain.metrics["depth_error_vs_sfm"] * 1.05
+
+
+def test_exposure_compensation_absorbs_per_frame_exposure(scene):
+    """Frames exposed differently, like a phone's auto exposure and white balance at night.
+    With exposure_comp each frame's learned gain follows the camera's, and the splat learns
+    one consistent scene, so held-out views score better."""
+    import dataclasses
+
+    rng = np.random.default_rng(1)
+    gains = [1.0, 0.55, 0.8, 0.6, 0.9, 1.0, 0.65, 0.85, 0.7, 0.95]  # frames 0 and 5 are held out
+    paths = []
+    for i, path in enumerate(scene.image_paths):
+        tint = np.ones(3) if i % 5 == 0 else rng.uniform(0.85, 1.0, 3)
+        img = cv2.imread(str(path)).astype(np.float32) * gains[i] * tint
+        out = scene._dir / f"exposed_{i:03d}.png"
+        cv2.imwrite(str(out), np.clip(img, 0, 255).round().astype(np.uint8))
+        paths.append(out)
+    exposed = dataclasses.replace(scene, image_paths=paths)
+    # No densification: this is about colour, and it keeps the runs to seconds.
+    cfg = dict(holdout_every=5, steps=150, refine_start_iter=100_000)
+    on = GaussianTrainer("torch", device="cpu").train(
+        exposed, small_config(exposure_comp=True, exposure_lr=2e-2, **cfg)).metrics
+    off = GaussianTrainer("torch", device="cpu").train(exposed, small_config(**cfg)).metrics
+    learned = on["exposure_gains"]
+    assert sorted(learned) == [p.stem for i, p in enumerate(paths) if i % 5]  # training frames only
+    applied = [gains[int(k.rsplit("_", 1)[1])] for k in sorted(learned)]
+    assert np.corrcoef([learned[k] for k in sorted(learned)], applied)[0, 1] > 0.9, learned
+    assert on["psnr"] > off["psnr"] + 0.5, (on["psnr"], off["psnr"])  # measured +0.9 dB
+    assert on["psnr_cc"] > off["psnr_cc"] + 0.1, (on["psnr_cc"], off["psnr_cc"])  # measured +0.3 dB
+    assert off["exposure_gains"] is None and off["exposure_comp"] is False
