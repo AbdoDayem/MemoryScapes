@@ -194,3 +194,26 @@ def test_stored_files_support_etags_and_ranges(store):
     assert part.headers["content-range"] == f"bytes 4-11/{len(data)}"
     assert client.get(url, headers={"Range": "bytes=-4"}).content == data[-4:]
     assert client.get(url, headers={"Range": "bytes=99999-"}).status_code == 416
+
+
+def test_a_streaming_lod_tree_is_stored_with_every_chunk(store):
+    """Spark fetches a chunked .rad's chunks by name next to its header, so the database must
+    hold each one; the manifest lists them for exactly this."""
+    rad = {"url": "publish/lod/splat-lod.rad", "chunks": [f"publish/lod/splat-lod-{i}.radc" for i in range(3)],
+           "count": 9}
+    with_tree = {**MANIFEST, "splat": {**MANIFEST["splat"], "rad": rad}}
+    files = memory_files.referenced_files(with_tree)
+    assert {k for k, kind in files.items() if kind == "splat"} >= {rad["url"], *rad["chunks"]}
+    store.write_bytes("mem_1/publish/manifest.json", json.dumps(with_tree).encode())
+    store.write_bytes("mem_1/" + rad["url"], b"RAD")
+    for i, key in enumerate(rad["chunks"]):
+        store.write_bytes("mem_1/" + key, b"chunk" * (i + 1))
+    summary = memory_files.store("mem_1")
+    assert summary["missing"] == []
+    row = db.get_file("mem_1", rad["chunks"][2])
+    assert row["data"] == b"chunk" * 3 and row["content_type"] == "application/octet-stream"
+    # Served from the database, including the header's byte range Spark asks for first.
+    client = TestClient(app)
+    r = client.get("/memories/mem_1/files/publish/lod/splat-lod.rad", headers={"Range": "bytes=0-65535"})
+    assert r.status_code == 206 and r.content == b"RAD"
+    assert client.get("/memories/mem_1/files/publish/lod/splat-lod-1.radc").content == b"chunkchunk"

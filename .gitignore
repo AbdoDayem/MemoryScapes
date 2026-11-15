@@ -36,5 +36,7 @@ Thumbs.db
 
 # Model checkouts and weights (AudioSep etc.)
 .models/
+# Built tools (Spark's build-lod, from deploy/setup.py)
+services/workers/.tools/
 # deploy/serve.py
 logs/

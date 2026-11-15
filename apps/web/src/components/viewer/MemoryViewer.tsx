@@ -29,7 +29,7 @@ import { getMemory, type MemoryResponse } from "@/lib/api";
 import { assetResolver } from "./assets";
 import { createGpuTimer } from "./gpuTimer";
 import { asWalkable, clampToWalkable, samplePath, type CapturePath } from "./navigation";
-import { deviceClass, parseOverrides, pickLods, QualityGovernor, START_TIER, TIERS } from "./renderQuality";
+import { deviceClass, parseOverrides, pickLods, QualityGovernor, START_TIER, streamsTree, TIERS } from "./renderQuality";
 import { failureSummary, pollAction, stageRows } from "./status";
 
 type Phase = "loading" | "processing" | "ready" | "failed" | "error";
@@ -334,10 +334,48 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
     debug.memoryscapesViewer = { renderer, scene, camera, spark, setTier };
   }
 
-  // ---- splat LODs: coarsest first, each replaces the previous when loaded; the last
-  // (most detailed for this device) loads as a LoD tree, so Spark draws a splat budget
+  // ---- the splat. On desktops, streamed from its LoD tree (.rad, built by the publish
+  // stage) when the memory has one: the first chunk is a coarse view of everything, and
+  // Spark fetches the detail the view needs. Otherwise the .spz LODs, coarsest first, each
+  // replacing the previous when loaded; the last (most detailed for this device) becomes a
+  // LoD tree in the browser. Either way Spark draws a splat budget.
+  const rad = streamsTree(device, !!manifest.splat.rad, overrides) ? manifest.splat.rad : undefined;
+  const streamTree = async (tree: NonNullable<typeof rad>): Promise<boolean> => {
+    const url = resolve(tree.url);
+    hooks.setLodStatus("Streaming splat…");
+    // A streamed mesh is "initialized" before fetching anything: check the header first.
+    const head = await fetch(url, { headers: { Range: "bytes=0-0" } }).catch(() => null);
+    if (!head?.ok) return false;
+    const mesh = new SplatMesh({ url, paged: true });
+    mesh.maxSh = TIERS[tier].maxSh;
+    await mesh.initialized;
+    if (hooks.isDisposed()) {
+      mesh.dispose();
+      return true;
+    }
+    scene.add(mesh);
+    const drawing = () => (mesh.paged?.getNumSplats() ?? 0) > 0; // Spark has paged splats in
+    await waitFor(() => drawing() || hooks.isDisposed(), 15_000);
+    if (hooks.isDisposed()) {
+      mesh.dispose();
+      return true;
+    }
+    if (!drawing()) {
+      scene.remove(mesh);
+      mesh.dispose();
+      return false;
+    }
+    current = mesh;
+    measuring = true;
+    const count = manifest.splat.lods[0]?.count; // the tree's own count includes interior nodes
+    hooks.setLodStatus(`${count ? count.toLocaleString() + " gaussians" : "Splat"}, streamed`);
+    return true;
+  };
+
   const lods = pickLods(manifest.splat.lods, device, overrides.lod);
   (async () => {
+    if (rad && (await streamTree(rad).catch(() => false))) return;
+    if (rad) console.warn("Couldn't stream the splat's LoD tree; loading its .spz levels instead.");
     for (const [i, lod] of lods.entries()) {
       hooks.setLodStatus(`Loading splat ${i + 1}/${lods.length}${lod.count ? ` (${lod.count.toLocaleString()} gaussians)` : ""}…`);
       const isTree = i === lods.length - 1;
@@ -409,6 +447,8 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
   let lastFrame = performance.now();
   let perfFrames = 0;
   let perfStart = lastFrame;
+  let firstSplatAt: number | null = null; // ms since the page started loading
+  let loadedAt: number | null = null;
   const gpu = overrides.perf ? createGpuTimer(renderer.getContext() as WebGL2RenderingContext) : null;
   renderer.setAnimationLoop((now: number) => {
     const dt = Math.min(clock.getDelta(), 0.1);
@@ -418,14 +458,20 @@ async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: 
       tier = next;
       applyTier();
     }
-    if (overrides.perf) perfFrames++;
+    if (overrides.perf) {
+      perfFrames++;
+      if (firstSplatAt === null && spark.activeSplats > 0) firstSplatAt = now;
+      if (loadedAt === null && measuring) loadedAt = now;
+    }
     if (overrides.perf && now - perfStart >= 1000) {
       const fps = (perfFrames * 1000) / (now - perfStart);
       const gpuMs = gpu?.take() ?? NaN;
+      const secs = (t: number | null) => (t === null ? "…" : `${(t / 1000).toFixed(1)} s`);
       hooks.setPerf(
         `${fps.toFixed(0)} fps${Number.isFinite(gpuMs) ? ` (GPU ${gpuMs.toFixed(1)} ms)` : ""} · ` +
           `${TIERS[tier].name}${governor ? " (auto)" : ""} · ` +
-          `${spark.activeSplats.toLocaleString()} splats drawn · ${renderer.getPixelRatio()}x pixels`,
+          `${spark.activeSplats.toLocaleString()} splats drawn · ${renderer.getPixelRatio()}x pixels · ` +
+          `first splat ${secs(firstSplatAt)}, loaded ${secs(loadedAt)} after page start`,
       );
       perfFrames = 0;
       perfStart = now;

@@ -32,6 +32,13 @@ winget install Nvidia.CUDA -v 12.8
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
+For faster-loading splats (streamed in the browser), also install Rust. Setup builds Spark's
+`build-lod` with it, which also needs the C++ build tools above:
+
+```bat
+winget install Rustlang.Rustup
+```
+
 Open a new terminal afterwards so the tools are on `PATH`. You also need a recent NVIDIA driver.
 
 ## 2. Get the code and set it up
@@ -48,11 +55,16 @@ deploy\windows\setup.cmd --build-gsplat
 - **Workers:** `services\workers\.venv` gets CUDA torch from PyTorch's cu128 index (PyPI's
   Windows torch is CPU-only), the audio, visual and SATIE extras, and, with
   `--build-gsplat`, gsplat's CUDA kernels built through `cuda_env.cmd`.
+- **Streaming LoD tool:** with Rust installed, Spark's `build-lod` is built into
+  `services\workers\.tools\` (about 2 minutes, once per Spark version). The publish stage
+  then gives each memory a streaming LoD tree. Without Rust this step is skipped, and memories
+  load the slower way.
 - **Models:** about 6 GB, the first time only.
 - **API:** `services\api\.venv`.
 - **Web app:** `npm ci`, then the production build.
 - **Checks:** at the end it prints whether torch sees the GPU, which splat trainer will be
-  used (`gsplat` is the fast one), and whether SATIE is signed in.
+  used (`gsplat` is the fast one), whether `build-lod` is installed, and whether SATIE is
+  signed in.
 
 ## 3. Sign in to SATIE (once)
 
@@ -123,6 +135,11 @@ pass (face and number-plate blur) exists.
 - **"Port 3000 (web) is in use":** the site or a dev server is already running.
 - **The splat trains slowly:** run `deploy\windows\setup.cmd --check`. If the trainer isn't
   `gsplat`, run `setup.cmd --build-gsplat --skip-models`.
+- **A memory loads slowly or doesn't stream:** add `?perf` to its address. The status says
+  "streamed" when it uses its LoD tree. Memories published before `build-lod` was installed have
+  none. Rebuild one with
+  `services\workers\.venv\Scripts\memoryscapes-worker run <id> --stages publish`, then
+  `services\api\.venv\Scripts\python -m app.memory_files store <id>` (run from `services\api`).
 - **A memory has no sound:** the viewer says why. Usually SATIE isn't signed in, or the month's
   compositions are used up. Re-run the soundscape stage when that's fixed:
   `services\workers\.venv\Scripts\memoryscapes-worker run <id> --stages soundscape,publish`.

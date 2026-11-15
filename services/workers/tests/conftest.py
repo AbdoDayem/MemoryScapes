@@ -20,6 +20,13 @@ def _offline_soundscape(monkeypatch):
     monkeypatch.delenv("SATIE_MCP_TOKEN", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_lod_tree_tool(monkeypatch):
+    """Publish builds a LoD tree when Spark's build-lod is installed; tests that want one
+    use a fake (tests/test_lod_tree.py), so results don't depend on the machine."""
+    monkeypatch.setenv("SPARK_BUILD_LOD", "off")
+
+
 @pytest.fixture
 def storage(tmp_path) -> LocalStorage:
     return LocalStorage(tmp_path / "storage")

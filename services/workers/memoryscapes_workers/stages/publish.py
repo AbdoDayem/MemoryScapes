@@ -1,7 +1,11 @@
 """Privacy pass, previews and manifest publish.
 
 Implemented: build the manifest from the stage outputs, validate it against
-packages/manifest/memory.schema.json and write it, for **private** memories.
+packages/manifest/memory.schema.json and write it, for **private** memories. When Spark's
+build-lod tool is installed (visual/lod_tree.py), also build the splat's streaming LoD tree
+from lod0 (``lod_tree``: auto | quality | quick | off). It's built here, not in the splat
+stage, because publishing is cheap to redo (installing the tool later rebuilds only this
+stage) and because the privacy pass will change the splat here first.
 
 Not yet (needed before ``unlisted``/``public``, which this stage refuses until then):
 - Blur faces and license plates (retrain or mask the splat); optionally detect and mute
@@ -13,6 +17,8 @@ Reads   splat/lods.json, poses/navigation.json, ingest/meta.json,
         always comes from SATIE after separation and localization; the original
         recording is still listed as the ambient bed)
 Writes  publish/manifest.json
+        publish/lod/splat-lod.rad, splat-lod-<i>.radc  (the LoD tree, when built; listed in
+        the manifest as splat.rad)
 
 Asset URLs in the manifest are keys relative to the memory root, e.g.
 "splat/lods/lod0.spz". The API returns an ``asset_base`` next to the manifest and the
@@ -32,6 +38,7 @@ from pydantic import BaseModel
 
 from memoryscapes_workers.context import StageContext
 from memoryscapes_workers.stagekit import StageError, StageIO, run_stage, write_json
+from memoryscapes_workers.visual import lod_tree
 
 STAGE = "publish"
 VERSION = "1"
@@ -44,6 +51,9 @@ class PublishConfig(BaseModel):
     visibility: Literal["private", "unlisted", "public"] = "private"
     title: str | None = None
     owner: str | None = None
+    # The streaming LoD tree: "auto" builds one ("quality") when build-lod is installed.
+    # Resolved before fingerprinting, so installing the tool republishes.
+    lod_tree: Literal["auto", "quality", "quick", "off"] = "auto"
 
 
 def run(ctx: StageContext) -> dict:
@@ -58,10 +68,20 @@ def run(ctx: StageContext) -> dict:
     # The audio stages write no stage marker, so fingerprint their output directly.
     digest = hashlib.sha256(ctx.storage.read_bytes(scene_key)).hexdigest()[:16] if has_scene else None
     version = _previous_version(ctx) + 1
+    strict = cfg.lod_tree != "auto"
+    tool = lod_tree.find_tool() if cfg.lod_tree != "off" else None
+    if cfg.lod_tree == "auto":
+        cfg = cfg.model_copy(update={"lod_tree": "quality" if tool else "off"})
+    elif cfg.lod_tree != "off" and tool is None:
+        raise StageError(STAGE, f"lod_tree={cfg.lod_tree!r} needs Spark's build-lod tool, which "
+                         "isn't installed.", lod_tree.INSTALL_HINT)
+    extra = {"soundscape": digest} if digest else {}
+    if cfg.lod_tree != "off":
+        extra["lod_tree_tool"] = lod_tree.tool_version()
     return run_stage(ctx, STAGE, version=VERSION, config=cfg,
                      upstream=["ingest", "poses", "splat"],
-                     extra_inputs={"soundscape": digest} if digest else None,
-                     body=lambda io: _publish(io, cfg, version, has_scene))
+                     extra_inputs=extra or None,
+                     body=lambda io: _publish(io, cfg, version, has_scene, tool, strict))
 
 
 def _previous_version(ctx: StageContext) -> int:
@@ -74,19 +94,30 @@ def _previous_version(ctx: StageContext) -> int:
         return 0
 
 
-def _publish(io: StageIO, cfg: PublishConfig, version: int, has_scene: bool) -> dict:
+def _publish(io: StageIO, cfg: PublishConfig, version: int, has_scene: bool,
+             tool: list[str] | None = None, strict: bool = False) -> dict:
     ctx = io.ctx
     lods = io.read_upstream_json("splat", "lods.json")
     nav = io.read_upstream_json("poses", "navigation.json")
     meta = io.read_upstream_json("ingest", "meta.json")
     scene = io.read_upstream_json("soundscape", "scene.json") if has_scene else None
+    tree, tree_bytes, tree_note = None, 0, None
+    if cfg.lod_tree != "off" and tool and lods.get("lods"):
+        try:
+            tree, tree_bytes = _build_lod_tree(io, tool, lods["lods"][0]["file"], cfg.lod_tree)
+        except lod_tree.LodTreeError as exc:
+            if strict:
+                raise StageError(STAGE, f"Couldn't build the streaming LoD tree: {exc}") from exc
+            # Optional: the viewer falls back to the .spz levels.
+            tree_note = str(exc)
     manifest = build_manifest(ctx.memory_id, version=version, lods=lods, navigation=nav,
                               ingest_meta=meta, scene=scene, cfg=cfg,
-                              has_audio=ctx.storage.exists(ctx.key("ingest", "audio.wav")))
+                              has_audio=ctx.storage.exists(ctx.key("ingest", "audio.wav")),
+                              rad=tree)
     validate_manifest(manifest)
     write_json(io.out_dir / MANIFEST, manifest)
     audio = manifest["audio"]
-    return {
+    summary = {
         "version": version,
         "visibility": cfg.visibility,
         "lods": len(manifest["splat"]["lods"]),
@@ -94,11 +125,33 @@ def _publish(io: StageIO, cfg: PublishConfig, version: int, has_scene: bool) -> 
         "placed_sources": sum(1 for s in audio["sources"] if s.get("position") is not None),
         "soundscape": audio.get("soundscape_provider", {}).get("name"),
     }
+    if tree is not None:
+        summary["lod_tree"] = {"chunks": len(tree["chunks"]), "count": tree.get("count"),
+                               "mb": round(tree_bytes / 1e6, 1)}
+    elif tree_note:
+        summary["lod_tree_error"] = tree_note
+    return summary
+
+
+def _build_lod_tree(io: StageIO, tool: list[str], lod0_file: str, method: str) -> tuple[dict, int]:
+    """Build publish/lod/splat-lod.rad (+ chunks) from the splat's lod0. Returns the
+    manifest's splat.rad entry and the tree's size in bytes."""
+    ctx = io.ctx
+    io.progress(0.1, "building the streaming LoD tree")
+    src = io.work_dir / "lod_tree_src" / Path(lod0_file).name
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(ctx.storage.read_bytes(ctx.key("splat", lod0_file)))  # just lod0, not all of splat/
+    built = lod_tree.build(tool, src, io.out_dir / "lod", method=method)
+    entry: dict[str, Any] = {"url": f"{STAGE}/lod/{built.header}",
+                             "chunks": [f"{STAGE}/lod/{c}" for c in built.chunks]}
+    if built.count is not None:
+        entry["count"] = built.count
+    return entry, built.bytes
 
 
 def build_manifest(memory_id: str, *, version: int, lods: dict, navigation: dict,
                    ingest_meta: dict, scene: dict | None, cfg: PublishConfig,
-                   has_audio: bool) -> dict[str, Any]:
+                   has_audio: bool, rad: dict | None = None) -> dict[str, Any]:
     def rel(key: str) -> str:
         """Storage key -> URL relative to the memory root."""
         prefix = f"{memory_id}/"
@@ -149,13 +202,16 @@ def build_manifest(memory_id: str, *, version: int, lods: dict, navigation: dict
     if ingest_meta.get("captured_at"):
         meta_out["captured_at"] = ingest_meta["captured_at"]
 
+    # Most detailed first; the viewer loads the last (coarsest) one first.
+    splat: dict[str, Any] = {"lods": [{"url": f"splat/{lod['file']}", "count": int(lod["count"])}
+                                      for lod in lods["lods"]]}
+    if rad is not None:
+        splat["rad"] = rad
     return {
         "id": memory_id,
         "version": version,
         "coord_frame": coord,
-        # Most detailed first; the viewer loads the last (coarsest) one first.
-        "splat": {"lods": [{"url": f"splat/{lod['file']}", "count": int(lod["count"])}
-                           for lod in lods["lods"]]},
+        "splat": splat,
         "navigation": nav,
         "audio": audio,
         "meta": meta_out,
