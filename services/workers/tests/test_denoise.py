@@ -126,3 +126,38 @@ def test_phone_stereo_that_disagrees_above_500_hz_keeps_its_speech_band():
     _, report = clean_recording(x, SR)
     assert report["wind"] == "suppressed" and report["wind_like_frames"] < 0.05
     assert abs(report["removed_db"]["500-2000 Hz"]) < 0.3
+
+
+def _phone_stereo(seconds=8.0, seed=4):
+    """Still air, but channels that hardly agree above ~500 Hz, as phones' processed stereo
+    does: each channel keeps the scene below 500 Hz and gets its own version above it."""
+    rng = np.random.default_rng(seed)
+    n = int(seconds * SR)
+    low = signal.butter(4, 500, "low", fs=SR, output="sos")
+    high = signal.butter(4, [500, 5000], "band", fs=SR, output="sos")
+    voice = signal.sosfiltfilt(signal.butter(4, [150, 5000], "band", fs=SR, output="sos"), rng.standard_normal(n))
+    voice *= 0.2 * (1 + np.sin(2 * np.pi * 3 * np.arange(n) / SR)) / np.std(voice)
+    common = _place(signal.sosfiltfilt(low, voice), 30)
+    own = [signal.sosfiltfilt(high, rng.standard_normal(n)) * (1 + np.sin(2 * np.pi * 3 * np.arange(n) / SR))
+           for _ in range(2)]
+    own = np.stack(own) * (np.std(signal.sosfiltfilt(high, voice)) / np.std(own))
+    return (common + own).astype(np.float32)
+
+
+def test_phone_stereo_with_a_moving_voice_keeps_its_mids_and_the_gate_is_what_does_it():
+    """A voice (coherent below 500 Hz, its own per channel above) in still air: the gated
+    gain leaves 0.5-2 kHz alone, and an always-on gain would not."""
+    x = _phone_stereo()
+    _, report = clean_recording(x, SR)
+    assert report["wind"] == "suppressed" and report["wind_like_frames"] < 0.02
+    assert abs(report["removed_db"]["500-2000 Hz"]) < 0.3
+    _, ungated = clean_recording(x, SR, CleaningConfig(always_below_hz=4000.0))
+    assert ungated["removed_db"]["500-2000 Hz"] > 1.0
+
+
+def test_phone_stereo_with_wind_still_has_its_wind_removed():
+    x = _phone_stereo(seed=5)
+    wind = _mic_wind(x.shape[1], seed=6)
+    wind *= np.sqrt(np.sum(x ** 2) / np.sum(wind ** 2))
+    _, report = clean_recording(x + wind, SR)
+    assert report["wind_like_frames"] > 0.05 and report["removed_db"]["20-100 Hz"] > 3
