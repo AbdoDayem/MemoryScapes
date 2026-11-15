@@ -48,8 +48,10 @@ from memoryscapes_workers.stagekit import StageError, StageIO, run_stage, write_
 
 STAGE = "poses"
 log = logging.getLogger("memoryscapes.poses")
-VERSION = "6"  # 6: metric scale from spatial video; 2: audio contract; 3: points3d_rgb.npy; 4: focal prior, mapper fallback,
-#                sky masks, walking-speed scale check; 5: edited videos (cross-shot)
+VERSION = "7"  # 2: audio contract; 3: points3d_rgb.npy; 4: focal prior, mapper fallback,
+#                sky masks, walking-speed scale check; 5: edited videos (cross-shot);
+#                6: exhaustive matching for short clips (turning in place);
+#                7: spatial video (metric scale from the two eyes, right-eye cameras, stereo depth)
 
 CAPTURE_HINT = (
     "Move slowly and steadily, walk through the space or orbit the subject instead of "
@@ -71,7 +73,14 @@ class PosesConfig(BaseModel):
     # the same scenery can join one reconstruction.
     cross_shot_samples: int = 10
     max_num_features: int = 8192
-    matcher: Literal["sequential", "exhaustive"] = "sequential"
+    # "auto": exhaustive up to exhaustive_max_images frames, sequential beyond. Sequential
+    # only matches nearby frames, so a clip that starts by turning in place (no parallax)
+    # gives global mapping no link between the turn and the walk after it: every frame
+    # still gets placed, but the turn becomes a long walk and the walk collapses to a
+    # point. Exhaustive matching ties them together through scenery seen twice. It grows
+    # with the square of the frame count (114 frames: about 1 extra minute on a GPU).
+    matcher: Literal["auto", "sequential", "exhaustive"] = "auto"
+    exhaustive_max_images: int = 200
     sequential_overlap: int = 15
     min_registered_fraction: float = Field(0.5, ge=0, le=1)
     # Metric scale: handheld eye height above the ground plane. Override when known.
@@ -142,7 +151,9 @@ def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int, focal_fa
     )
     io.progress(0.2, "features extracted")
 
-    if cfg.matcher == "exhaustive":
+    matcher = choose_matcher(cfg, n_images)
+    log.info("[%s] %s matching (%d frames)", STAGE, matcher, n_images)
+    if matcher == "exhaustive":
         pycolmap.match_exhaustive(db, device=device)
     else:
         pairing = pycolmap.SequentialPairingOptions()
@@ -150,7 +161,7 @@ def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int, focal_fa
         pairing.quadratic_overlap = True
         pycolmap.match_sequential(db, pairing_options=pairing, device=device)
     n_shots = len(set((shot_of or {}).values()))
-    if n_shots > 1 and cfg.matcher != "exhaustive":
+    if n_shots > 1 and matcher != "exhaustive":
         pairs = cross_shot_pairs(shot_of, cfg.cross_shot_samples)
         pair_file = work / "cross_shot_pairs.txt"
         pair_file.write_text("\n".join(f"{a} {b}" for a, b in pairs) + "\n", encoding="utf-8")
@@ -199,6 +210,13 @@ def _sfm(io: StageIO, cfg: PosesConfig, image_dir: Path, n_images: int, focal_fa
         )
     io.progress(0.7, f"registered {registered}/{n_images} frames ({used} mapping)")
     return rec, work, used
+
+
+def choose_matcher(cfg: PosesConfig, n_images: int) -> str:
+    """The feature matcher for this many frames (see PosesConfig.matcher)."""
+    if cfg.matcher != "auto":
+        return cfg.matcher
+    return "exhaustive" if n_images <= cfg.exhaustive_max_images else "sequential"
 
 
 def shot_coverage(meta: dict, placed: set[str]) -> list[dict]:

@@ -85,6 +85,7 @@ def lift_box(
     depth_percentile: float = 35.0,
     shrink: float = 0.15,
     depth_band: float = 0.2,
+    grow: float = 1.0,
 ) -> np.ndarray | None:
     """3D point for a detection: the centroid of the scene points that project inside
     the (slightly shrunk) box and sit at the object's depth.
@@ -93,7 +94,12 @@ def lift_box(
     object over background showing through the box; points within `depth_band` of it
     (relative) are the object's visible surface. Using their centroid instead of the
     box centre keeps boxes cut off by the frame edge from pointing past the object.
-    Returns None when too few scene points land in the box to trust the depth.
+    A sparse SfM cloud (a few thousand points for a phone walk) often leaves fewer than
+    `min_points` inside an object's box. Then the box is grown by `grow` times its size
+    on each side, around its centre, and tried once more: the points just around an
+    object are usually at its depth (the ground it stands on, the wall behind it). The
+    low-percentile depth keeps the background those extra points bring from winning.
+    Returns None when even the grown box holds too few points to trust the depth.
     """
     w2c = np.linalg.inv(camera.c2w)
     pc = points_world @ w2c[:3, :3].T + w2c[:3, 3]
@@ -106,6 +112,9 @@ def lift_box(
     x0, y0, x1, y1 = box
     dx, dy = (x1 - x0) * shrink / 2, (y1 - y0) * shrink / 2
     inside = (uv[:, 0] >= x0 + dx) & (uv[:, 0] <= x1 - dx) & (uv[:, 1] >= y0 + dy) & (uv[:, 1] <= y1 - dy)
+    if inside.sum() < min_points and grow > 0:
+        gx, gy = (x1 - x0) * grow, (y1 - y0) * grow
+        inside = (uv[:, 0] >= x0 - gx) & (uv[:, 0] <= x1 + gx) & (uv[:, 1] >= y0 - gy) & (uv[:, 1] <= y1 + gy)
     if inside.sum() < min_points:
         return None
     # "nearest": an actual point's depth, so the band below always holds at least one

@@ -75,6 +75,8 @@ export interface LocalizedSource {
   level_dbfs: number;
   level_db_at_1m: number | null;
   trajectory?: string | null;
+  /** Id of the source this one shares a position with (both found on one object). */
+  shares_with?: string | null;
 }
 
 export interface Localized {

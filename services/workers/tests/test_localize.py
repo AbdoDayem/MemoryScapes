@@ -136,6 +136,36 @@ def test_lift_box_on_sparse_far_points_is_finite():
     assert p is not None and np.isfinite(p).all()
 
 
+def test_lift_box_in_a_sparse_cloud_uses_the_points_around_the_box():
+    """A phone walk's SfM cloud is sparse: an object's box can hold fewer points than
+    `min_points` while the wall around it has plenty. Grow the box rather than drop
+    the detection (TestVideo lifted 1 of 22 detections before this)."""
+    cam = look_camera(np.array([0.0, 1.6, 0.0]), 0.0, 0.0, "f0")
+    target = np.array([1.0, 1.0, 5.0])
+    u, v = project(cam, target)
+    pts = wall_points(step=0.5)  # 0.5 m apart: a 40 px (0.4 m) box at 5 m holds too few
+    box = (u - 20, v - 20, u + 20, v + 20)
+    assert lift_box(box, cam, pts, grow=0) is None
+    p = lift_box(box, cam, pts)
+    assert p is not None and abs(p[2] - 5.0) < 0.5  # at the wall's depth
+    assert np.linalg.norm(p - target) < 1.5
+
+
+def test_doa_does_not_pin_featureless_stereo_under_the_camera():
+    """Stereo with no time difference between the channels (bearings all ~0, as many
+    phones record) while the camera turns around: the point straight below the camera
+    is broadside to every mic axis, so it used to win and every sound landed there.
+    It must not score; level points broadside to the start keep their score."""
+    cams = [look_camera(np.array([0.0, 1.6, 0.0]), yaw, float(i), f"f{i}") for i, yaw in enumerate(range(0, 181, 15))]
+    path = doa.CameraPath(cams)
+    bearings = [doa.Bearing(t=c.t, cos=0.0, weight=1.0) for c in cams]
+    below, ahead = np.array([0.0, -1.2, 0.0]), np.array([0.0, 1.6, 5.0])
+    scores = doa.bearing_likelihood(np.stack([below, ahead]), bearings, path)
+    assert scores[0] == 0.0
+    # straight ahead fits the first and last frames (yaw 0 and 180) only
+    assert scores[1] > 0.1
+
+
 def test_clustering_ignores_nan_points_and_zero_weights():
     pts = np.array([[0.0, 0.0, 0.0], [np.nan, 0.0, 0.0], [0.2, 0.0, 0.0], [5.0, 0.0, 0.0]])
     clusters = cluster_candidates(pts, np.array([1.0, 1.0, 1.0, 0.0]))

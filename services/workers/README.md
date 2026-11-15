@@ -213,11 +213,13 @@ Cleaning, before separation (`AUDIO_CLEAN=false` turns it off):
 - **What it did** is recorded in `stems.json` → `cleaning`: `highpass_hz`, `wind` ("suppressed", "off", or why it was skipped), `wind_like_frames`, and `removed_db` per band.
 
 **localize**: for each stem, in order of preference:
-1. **Audio-visual:** Grounding DINO looks for the class's prompt in the frames where the stem is loudest. Each box is lifted to 3D using the scene points inside it, then the lifts are clustered (at least 2 views).
-2. **Stereo DOA:** GCC-PHAT bearings per window, triangulated along the moving camera path. This chooses between AV clusters, or places the source alone.
+1. **Audio-visual:** Grounding DINO looks for the class's prompt in the frames where the stem is loudest. Each box is lifted to 3D using the scene points inside it, or, when a sparse SfM cloud leaves too few there, the points just around it. Then the lifts are clustered (at least 2 views).
+2. **Stereo DOA:** GCC-PHAT bearings per window, triangulated along the moving camera path. This chooses between AV clusters, or places the source alone. Candidates steeply above or below the camera (over 50° of elevation, none past 80°) are faded out: a horizontal mic pair can't tell them apart from anything else broadside, so stereo with no time difference between the channels, which many phones record, would otherwise pin every sound under the camera.
 3. **Diffuse** otherwise.
 
-Writes `localize/sources.json` with position, spread, confidence, method, and a level corrected to 1 m. Moving sources are placed at their dominant location for now.
+When several stems land on one point (their prompts found the same object, like a siren and a car horn on one vehicle), the most confident keeps it, and each other moves to its best placement elsewhere if it has a good enough one on its own. Otherwise it shares the point exactly, as one object making both sounds, and `shares_with` names the keeper.
+
+Writes `localize/sources.json` with position, spread, confidence, method, `shares_with` (or null), and a level corrected to 1 m. Moving sources are placed at their dominant location for now.
 
 **soundscape**: hands the sources to the configured provider.
 - Sound is always SATIE's: the viewer plays it with `satie-runtime`, binding each host at its source's position.
