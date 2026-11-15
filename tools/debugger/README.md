@@ -34,7 +34,7 @@ Turning off **Visual grounding** skips Grounding DINO, the slowest step on a CPU
 | **Checks** | Integration checks, worst first (see below) |
 | **Audio** | Tag scores against the selection thresholds; the recording, every stem and the ambient bed, with waveform, activity envelope and playback; a spectrogram of the selected track; dropped stems and why |
 | **Localization** | Top-down map of the camera path, scene points, placed sounds with their spread and ground truth; a table of method, confidence, spread, level at 1 m and error |
-| **Splat** | Trainer metadata, Gaussian stats (count, bounds, opacity and scale histograms, alignment against the poses), training curves, and each keyframe beside its splat render with a difference image and PSNR |
+| **Splat** | Trainer metadata, Gaussian stats (count, bounds, opacity and scale histograms, alignment against the poses), the training report (`train_report.json`: held-out or training PSNR, colour-fitted `psnr_cc`, `depth_error_vs_sfm`, image counts, and the learned exposure per frame when `exposure_comp` is on; what an A/B compares), training curves, and each keyframe beside its splat render with a difference image and PSNR |
 | **3D scene** | The pose point cloud, splat Gaussian centres, camera frustums, sounds, spread spheres and ground truth in the one shared world frame, each a toggleable layer. **Listen from this viewpoint** loops every stem through HRTF panners with the orbit camera as the listener. |
 | **Files** | Every file in the memory, with a link to the raw file |
 

@@ -103,6 +103,22 @@ export interface SplatMeta {
 
 export type SplatMetrics = Record<string, number[]> & { iteration?: number[] };
 
+/** splat/train_report.json: the run's scores and settings (docs/SPLAT_OUTPUTS.md). */
+export interface TrainReport {
+  psnr?: number;
+  psnr_split?: "holdout" | "train";
+  /** PSNR after fitting each scored frame's colour: structure, not exposure. */
+  psnr_cc?: number;
+  depth_error_vs_sfm?: number | null;
+  train_images?: number;
+  right_eye_images?: number;
+  depth_supervised_images?: number;
+  exposure_comp?: boolean;
+  /** Learned brightness per training frame (1 = the splat's own); null without exposure_comp. */
+  exposure_gains?: Record<string, number> | null;
+  [key: string]: unknown;
+}
+
 export interface Truth {
   scenario?: string;
   description?: string;
@@ -124,6 +140,7 @@ export interface MemoryBundle {
   scene?: SoundscapeScene;
   splatMeta?: SplatMeta;
   splatMetrics?: SplatMetrics;
+  trainReport?: TrainReport;
   truth?: Truth;
   errors: { key: string; message: string }[];
 }
