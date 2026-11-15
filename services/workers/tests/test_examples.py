@@ -27,14 +27,18 @@ def run(tmp_path, scenario, detector=True):
     return ctx, {row.label: row for row in evaluate(r, localized)}, scene
 
 
-# scenario -> sound -> verdicts that count as a pass
+# scenario -> sound -> verdicts that count as a pass. Speech is placed only on strong
+# evidence (localize: speech_place_min_confidence) and is otherwise narration, heard
+# everywhere: a voice that can't be pinned down must never fade out (on a real phone clip
+# the filmer's voice was pinned to a bystander and was lost).
+SPEECH = {"placed", "narration (heard everywhere)"}
 EXPECTED = {
     "park_walk": {"birdsong": {"placed"}, "water": {"placed"}, "traffic": {"placed"}},
-    "street_cafe": {"speech": {"placed"}, "music": {"placed"}, "traffic": {"placed"}, "dog": {"placed"}},
+    "street_cafe": {"speech": SPEECH, "music": {"placed"}, "traffic": {"placed"}, "dog": {"placed"}},
     # bells are above the frame and the camera never moves, so range is unobservable
     "courtyard_static": {"water": {"placed"}, "bells": {"missed (left diffuse)", "loosely placed"}},
-    "beach_mono": {"speech": {"placed"}, "waves": {"placed", "loosely placed"}},
-    "hard_mode": {"speech": {"placed"}, "music": {"placed"}, "traffic": {"placed"}},
+    "beach_mono": {"speech": {"placed"}, "waves": {"placed", "loosely placed"}},  # seen clearly: placed
+    "hard_mode": {"speech": SPEECH, "music": {"placed"}, "traffic": {"placed"}},
 }
 
 

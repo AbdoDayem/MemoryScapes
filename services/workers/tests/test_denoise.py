@@ -111,3 +111,18 @@ def test_cleaning_can_be_configured_off():
     out, report = clean_recording(x, SR, CleaningConfig(highpass_hz=0, wind=False))
     np.testing.assert_array_equal(out, x)
     assert report["wind"] == "off" and report["highpass_hz"] is None
+
+
+def test_phone_stereo_that_disagrees_above_500_hz_keeps_its_speech_band():
+    """iPhone 16 Plus stereo agrees well below 200 Hz but hardly at all at 0.5-2 kHz, even in
+    calm air. Without wind, cleaning must leave that band alone (an always-on coherence gain
+    removed 3-5 dB of speech-band sound there)."""
+    rng = np.random.default_rng(5)
+    n = 8 * SR
+    low = signal.sosfiltfilt(signal.butter(4, 200, "low", fs=SR, output="sos"), rng.standard_normal(n))
+    mid = signal.butter(4, [500, 2000], "band", fs=SR, output="sos")
+    x = np.stack([low + 0.5 * signal.sosfiltfilt(mid, rng.standard_normal(n)),
+                  low + 0.5 * signal.sosfiltfilt(mid, rng.standard_normal(n))]).astype(np.float32)
+    _, report = clean_recording(x, SR)
+    assert report["wind"] == "suppressed" and report["wind_like_frames"] < 0.05
+    assert abs(report["removed_db"]["500-2000 Hz"]) < 0.3

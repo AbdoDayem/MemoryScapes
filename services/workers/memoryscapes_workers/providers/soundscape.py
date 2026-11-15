@@ -198,7 +198,8 @@ def build_scene_manifest(request: SoundscapeRequest) -> dict[str, Any]:
 
 def build_brief(request: SoundscapeRequest, cfg: SatieConfig) -> str:
     placed = [s for s in request.sources if s.source.position is not None]
-    diffuse = [s for s in request.sources if s.source.position is None]
+    narration = [s for s in request.sources if s.source.position is None and s.source.method == "narration"]
+    diffuse = [s for s in request.sources if s.source.position is None and s.source.method != "narration"]
     lines = [
         "This scene is a real place someone recorded, rebuilt as a walkable 3D memory.",
         "Recreate its soundscape from their own recordings. Use exactly the clip names below.",
@@ -211,6 +212,11 @@ def build_brief(request: SoundscapeRequest, cfg: SatieConfig) -> str:
     lines += ["", "Ambient bed (loop each as `bed`, heard everywhere):", "- clip memory/ambient (the rest of the recording)"]
     for s in diffuse:
         lines.append(f"- clip {s.clip} ({s.source.label}, no single location)")
+    if narration:
+        lines += ["", "Voices (loop each as `bed`, heard everywhere): the people in this memory talking, "
+                  "usually whoever is filming. They are the heart of it: keep every word clearly audible "
+                  "everywhere, above the other sounds."]
+        lines += [f"- clip {s.clip} ({s.source.label})" for s in narration]
     lines.append("")
     if cfg.allow_generation:
         lines.append(

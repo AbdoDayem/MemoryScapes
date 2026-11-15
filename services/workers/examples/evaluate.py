@@ -45,7 +45,8 @@ def evaluate(r: Rendered, localized: dict) -> list[Row]:
         if label in placed_truth:
             truth = placed_truth[label]
             if est is None:
-                rows.append(Row(label, truth.tolist(), None, src["method"], conf, None, None, "missed (left diffuse)"))
+                verdict = "narration (heard everywhere)" if src["method"] == "narration" else "missed (left diffuse)"
+                rows.append(Row(label, truth.tolist(), None, src["method"], conf, None, None, verdict))
                 continue
             err = float(np.linalg.norm(np.array(est) - truth))
             tolerance = max(GOOD_ABS_M, GOOD_REL * _distance_to_path(truth, r))

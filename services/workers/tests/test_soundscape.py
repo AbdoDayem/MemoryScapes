@@ -392,3 +392,14 @@ def test_new_stem_urls_get_a_new_realize(ctx, monkeypatch):
         soundscape.run(ctx, provider=_satie(fake))
         keys.append(next(a for n, a in fake.calls if n == "satie_realize")["requestKey"])
     assert keys[0] == keys[1] != keys[2]
+
+
+def test_the_brief_keeps_narration_audible():
+    narr = LocalizedSource("s3_speech", "speech", "speech", "mem_test/separate/stems/s3_speech.wav",
+                           None, None, 0.0, "narration", -52.0, None)
+    req = soundscape.SoundscapeRequest(
+        memory_id="m", sources=[soundscape.SoundscapeSource(PLACED, "u1"), soundscape.SoundscapeSource(narr, "u3")],
+        ambient_key="a", ambient_url="ua", ambient_channels=2, bounds_min=[0, 0, 0], bounds_max=[1, 1, 1])
+    brief = build_brief(req, SatieConfig())
+    assert "clip memory/s3_speech (speech)" in brief and "keep every word clearly audible" in brief
+    assert "no single location" not in brief.split("Voices")[1]  # not lumped in with wind or a crowd
