@@ -71,7 +71,7 @@ export interface LocalizedSource {
   position: Vec3 | null;
   spread_m: number | null;
   confidence: number;
-  method: "av" | "doa" | "av+doa" | "diffuse";
+  method: "av" | "doa" | "av+doa" | "diffuse" | "narration"; // narration: the filmer's voice, unplaced
   level_dbfs: number;
   level_db_at_1m: number | null;
   trajectory?: string | null;

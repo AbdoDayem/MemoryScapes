@@ -79,7 +79,7 @@
               "gain": { "type": "number" },
               "loop": { "type": "boolean" },
               "confidence": { "type": "number" },
-              "method": { "enum": ["av", "doa", "av+doa", "diffuse"] }
+              "method": { "enum": ["av", "doa", "av+doa", "diffuse", "narration"], "description": "How the position was found. diffuse and narration have none: narration is the filmer's own voice, heard everywhere at its recorded level" }
             }
           }
         },

@@ -114,3 +114,17 @@ def test_invalid_manifest_is_a_stage_error(ctx):
     assert "splat/lods" in err.value.message
     assert not ctx.storage.exists(ctx.key("publish", "manifest.json"))
     json.dumps(err.value.message)
+
+
+def test_narration_publishes(ctx):
+    """localize marks the filmer's unplaced voice as narration; the manifest must accept it."""
+    fake_upstream(ctx)
+    scene = read_json(ctx.storage, ctx.key("soundscape", "scene.json"))
+    m = ctx.memory_id
+    ctx.storage.write_bytes(f"{m}/separate/stems/s3_speech.wav", b"RIFF")
+    scene["sources"].append({"id": "s3_speech", "label": "speech", "key": f"{m}/separate/stems/s3_speech.wav",
+                             "position": None, "method": "narration", "confidence": 0.0})
+    write_json(ctx.storage, ctx.key("soundscape", "scene.json"), scene)
+    publish.run(ctx)
+    voice = next(s for s in manifest(ctx)["audio"]["sources"] if s["id"] == "s3_speech")
+    assert voice["method"] == "narration" and voice["position"] is None

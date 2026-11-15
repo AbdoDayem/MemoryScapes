@@ -15,8 +15,9 @@ export interface AudioSource {
   gain?: number;
   loop?: boolean;
   confidence?: number;
-  /** how the position was found: audio-visual grounding, stereo DOA, both, or not at all */
-  method?: "av" | "doa" | "av+doa" | "diffuse";
+  /** how the position was found: audio-visual grounding, stereo DOA, both, or not at all
+   * (diffuse; narration is the filmer's own voice, heard everywhere at its recorded level) */
+  method?: "av" | "doa" | "av+doa" | "diffuse" | "narration";
 }
 
 /** SATIE output, played in the viewer by satie-runtime. */
