@@ -249,3 +249,14 @@ def test_exposure_compensation_absorbs_per_frame_exposure(scene):
     assert on["psnr"] > off["psnr"] + 0.5, (on["psnr"], off["psnr"])  # measured +0.9 dB
     assert on["psnr_cc"] > off["psnr_cc"] + 0.1, (on["psnr_cc"], off["psnr_cc"])  # measured +0.3 dB
     assert off["exposure_gains"] is None and off["exposure_comp"] is False
+
+
+def test_a_collapsed_splat_says_what_went_wrong():
+    """With every gaussian transparent, gsplat's MCMC relocation fails with a bare "CUDA
+    error: invalid configuration argument" (an empty sample). The trainer names the cause."""
+    from memoryscapes_workers.visual.train import SplatCollapsed, _check_not_collapsed
+
+    alive = {"opacities": torch.tensor([-8.0, 2.0])}  # sigmoid: ~0.0003 and ~0.88
+    _check_not_collapsed(alive, 0.005, 600)
+    with pytest.raises(SplatCollapsed, match="poses"):
+        _check_not_collapsed({"opacities": torch.full((5,), -8.0)}, 0.005, 600)

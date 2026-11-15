@@ -443,6 +443,8 @@ class GaussianTrainer:
                 opt.zero_grad(set_to_none=True)
             sched.step()
             if mcmc:
+                if step % strategy.refine_every == 0:
+                    _check_not_collapsed(params, strategy.min_opacity, step)
                 strategy.step_post_backward(params, optimizers, state, step, info,
                                             lr=sched.get_last_lr()[0])
             else:
@@ -582,6 +584,22 @@ def _empty_cache() -> None:
         torch.cuda.empty_cache()
     elif torch.backends.mps.is_available():
         torch.mps.empty_cache()
+
+
+class SplatCollapsed(RuntimeError):
+    """Every gaussian went transparent: the views don't agree on one scene."""
+
+
+def _check_not_collapsed(params, min_opacity: float, step: int) -> None:
+    """MCMC relocates transparent gaussians onto opaque ones; with none opaque left gsplat
+    fails with "CUDA error: invalid configuration argument". Say what that means instead."""
+    import torch
+
+    if not bool((torch.sigmoid(params["opacities"]) > min_opacity).any()):
+        raise SplatCollapsed(
+            f"every gaussian went transparent by step {step}: the camera poses don't describe "
+            "one consistent scene (check poses/_stage.json: few points, a tiny scene_extent_m "
+            "next to path_length_m). Try poses.mapper=incremental.")
 
 
 def _maybe_reset_opacity(strategy, params, optimizers, state, step: int) -> None:
