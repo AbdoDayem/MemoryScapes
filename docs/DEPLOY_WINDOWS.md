@@ -121,7 +121,7 @@ pass (face and number-plate blur) exists.
 - **`setup.cmd` stops at a step:** it prints the command that failed. Fix the cause and run
   it again; finished steps are quick.
 - **"Port 3000 (web) is in use":** the site or a dev server is already running.
-- **The splat trains slowly:** run `py -3 deploy\setup.py --check`. If the trainer isn't
+- **The splat trains slowly:** run `deploy\windows\setup.cmd --check`. If the trainer isn't
   `gsplat`, run `setup.cmd --build-gsplat --skip-models`.
 - **A memory has no sound:** the viewer says why. Usually SATIE isn't signed in, or the month's
   compositions are used up. Re-run the soundscape stage when that's fixed:

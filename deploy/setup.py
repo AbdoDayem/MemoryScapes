@@ -258,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
         setup_web(env)
     checks()
     say("Done")
-    print("  Start the site:  deploy\\windows\\start.cmd   (or: py -3 deploy\\serve.py)")
+    print("  Start the site:  deploy\\windows\\start.cmd   (or: python deploy\\serve.py)")
     print("  Then open        http://localhost:3000")
     return 0
 
