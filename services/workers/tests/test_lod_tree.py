@@ -139,14 +139,15 @@ def test_levels_build_side_by_side(ctx, tmp_path, monkeypatch):
         src = Path(sys.argv[-1]); stem = src.with_suffix("")
         (stem.parent / (stem.name + "-lod.rad")).write_bytes(b"RAD")
         (stem.parent / (stem.name + "-lod-0.radc")).write_bytes(b"chunk")
-        with open(os.environ["BUILD_LOD_LOG"], "a") as f:
-            f.write(f"{start} {time.time()}\\n")
+        # One file per run: appending to a shared file from two processes loses lines on Windows.
+        (Path(os.environ["BUILD_LOD_LOG"]) / (stem.name + ".log")).write_text(f"{start} {time.time()}")
     '''))
-    log = tmp_path / "runs.log"
-    monkeypatch.setenv("BUILD_LOD_LOG", str(log))
+    logs = tmp_path / "runs"
+    logs.mkdir()
+    monkeypatch.setenv("BUILD_LOD_LOG", str(logs))
     monkeypatch.setattr(lod_tree, "find_tool", lambda: [sys.executable, str(script)])
     fake_upstream(ctx)
     publish.run(ctx)
     assert all(trees(ctx))
-    (s0, e0), (s1, e1) = sorted(tuple(map(float, line.split())) for line in log.read_text().splitlines())
+    (s0, e0), (s1, e1) = sorted(tuple(map(float, f.read_text().split())) for f in logs.glob("*.log"))
     assert s1 < e0, "the second build started only after the first had finished"
