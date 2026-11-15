@@ -23,6 +23,7 @@ const JSON_FILES = {
   scene: "soundscape/scene.json",
   splatMeta: "splat/meta.json",
   splatMetrics: "splat/metrics.json",
+  trainReport: "splat/train_report.json",
   truth: "debug/truth.json",
 } as const;
 

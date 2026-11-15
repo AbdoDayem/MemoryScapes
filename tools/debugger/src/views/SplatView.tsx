@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { dataUrl, relKey } from "../lib/api";
 import { compareClouds, percentile } from "../lib/checks";
+import { exposureSeries, reportRows } from "../lib/report";
 import type { GaussianView } from "../lib/ply";
 import type { MemoryBundle } from "../lib/types";
 import { bytes, cssVar, fmt, useCanvas } from "../lib/ui";
@@ -39,6 +40,7 @@ export function SplatView({ bundle, splat, splatError }: { bundle: MemoryBundle;
         </section>
         <GaussianStats bundle={bundle} splat={splat} error={splatError} />
       </div>
+      {bundle.trainReport && <Report bundle={bundle} />}
       {bundle.splatMetrics && <Metrics bundle={bundle} />}
       {bundle.cameras && <FrameCompare bundle={bundle} />}
     </>
@@ -124,6 +126,41 @@ function Histogram({ title, values, bins = 30 }: { title: string; values: Float3
       <h3>{title}</h3>
       <canvas ref={ref} className="fill" />
     </div>
+  );
+}
+
+/** splat/train_report.json: what to compare between runs (docs/SPATIAL_VIDEO.md A/B). */
+function Report({ bundle }: { bundle: MemoryBundle }) {
+  const r = bundle.trainReport!;
+  const exposure = exposureSeries(r);
+  return (
+    <section className="panel">
+      <div className="row">
+        <h2>Training report</h2>
+        <span className="muted">
+          {r.psnr_split === "holdout" ? "scored on held-out frames" : "scored on training frames (set splat.train.holdout_every for an honest score)"}
+        </span>
+      </div>
+      <div className="grid2">
+        <table>
+          <tbody>
+            {reportRows(r).map(([k, v]) => (
+              <tr key={k}>
+                <td className="muted">{k}</td>
+                <td className="mono">{v}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {exposure && (
+          <LineChart
+            title={`exposure gain per training frame (${fmt(Math.min(...exposure.gains))}–${fmt(Math.max(...exposure.gains))})`}
+            xs={exposure.gains.map((_, i) => i)}
+            ys={exposure.gains}
+          />
+        )}
+      </div>
+    </section>
   );
 }
 
