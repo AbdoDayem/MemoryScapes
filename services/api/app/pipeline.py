@@ -22,6 +22,7 @@ import os
 import shutil
 import subprocess
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,25 @@ def _watch(memory_id: str, proc: subprocess.Popen) -> None:
                 del _runs[memory_id]
 
 
+def _fill_captured_at(memory_id: str) -> None:
+    """The video's own capture time (ingest/meta.json, from its creation_time tag), when the
+    memory has none yet: the globe and the cards show when a place was recorded, and only
+    seeded memories had one."""
+    row = db.get_memory(memory_id)
+    if row is None or row.get("captured_at") is not None:
+        return
+    key = f"{memory_id}/ingest/meta.json"
+    if not get_store().exists(key):
+        return
+    captured = json.loads(get_store().read_bytes(key)).get("captured_at")
+    if not captured:
+        return
+    when = datetime.fromisoformat(str(captured).replace("Z", "+00:00"))
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    db.update_memory(memory_id, captured_at=when)
+
+
 def finish(memory_id: str, returncode: int) -> str:
     """Record a finished run: copy stage results into ``jobs``, then set ``ready`` (the run
     ended ``done`` and wrote a manifest) or ``failed`` with the reason. Returns the status."""
@@ -142,6 +162,10 @@ def finish(memory_id: str, returncode: int) -> str:
             memory_files.store(memory_id)
         except Exception:  # noqa: BLE001
             log.exception("could not store the files of %s", memory_id)
+        try:
+            _fill_captured_at(memory_id)
+        except Exception:  # noqa: BLE001
+            log.exception("could not read the capture time of %s", memory_id)
         db.set_status(memory_id, MemoryStatus.ready)
         return MemoryStatus.ready.value
 

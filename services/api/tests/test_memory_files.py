@@ -232,3 +232,21 @@ def test_every_levels_tree_is_referenced():
     for name in ("lod0", "lod1", "splat"):
         assert {tree(name)["url"], *tree(name)["chunks"]} <= splat
     assert {lod["url"] for lod in lods} <= splat
+
+
+def test_a_finished_run_takes_the_videos_capture_time(store):
+    """Ingest reads the video's creation_time; the memory had no capture time of its own."""
+    store.write_bytes("mem_1/job/status.json", json.dumps({"state": "done", "stages": {}}).encode())
+    store.write_bytes("mem_1/ingest/meta.json", json.dumps({"captured_at": "2023-07-08T10:51:55Z"}).encode())
+    assert pipeline.finish("mem_1", 0) == "ready"
+    assert db.get_memory("mem_1")["captured_at"].isoformat().startswith("2023-07-08T10:51:55")
+
+
+def test_a_capture_time_already_set_is_kept(store):
+    from datetime import datetime, timezone
+
+    db.update_memory("mem_1", captured_at=datetime(2020, 1, 2, tzinfo=timezone.utc))
+    store.write_bytes("mem_1/job/status.json", json.dumps({"state": "done", "stages": {}}).encode())
+    store.write_bytes("mem_1/ingest/meta.json", json.dumps({"captured_at": "2023-07-08T10:51:55Z"}).encode())
+    pipeline.finish("mem_1", 0)
+    assert db.get_memory("mem_1")["captured_at"].year == 2020
