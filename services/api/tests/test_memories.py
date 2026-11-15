@@ -76,3 +76,15 @@ def test_range_requests_for_audio_seeking(client):
     put("mem_1/ingest/audio.wav", bytes(range(256)) * 4)
     r = c.get("/memories/mem_1/files/ingest/audio.wav", headers={"Range": "bytes=10-19"})
     assert r.status_code == 206 and r.content == bytes(range(10, 20))
+
+
+@pytest.mark.parametrize("base", ["/api", "https://memories.example.org/api/"])
+def test_links_use_the_public_address_behind_a_proxy(client, monkeypatch, base):
+    """Deployed, the browser reaches the API through the web app's /api proxy or a tunnel:
+    links must use that address, not the one the request arrived on."""
+    c, _ = client
+    monkeypatch.setenv("PUBLIC_API_URL", base)
+    prefix = base.rstrip("/")
+    assert c.get("/memories/mem_1").json()["asset_base"] == f"{prefix}/memories/mem_1/files/"
+    created = c.post("/memories", json={"title": "t", "file_names": ["IMG_1.MOV"]}).json()
+    assert created["uploads"][0]["url"] == f"{prefix}/memories/{created['id']}/upload/IMG_1.MOV"

@@ -187,4 +187,9 @@ def _only_blocked_by_skips(name: str, stages: dict) -> bool:
 
 
 if __name__ == "__main__":
+    # Started by the API or the debugger: read <repo>/.env like the CLI does (real
+    # environment variables win), so SATIE's settings and PUBLIC_API_URL apply.
+    from memoryscapes_workers import envfile
+
+    envfile.load()
     raise SystemExit(main())

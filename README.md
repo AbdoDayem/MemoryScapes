@@ -64,6 +64,10 @@ cd services/workers && .venv/bin/python -m pytest
 
 `infra/docker-compose.yml` (`npm run infra:up`, needs Docker) is ready for when the API moves to Postgres and S3-style storage. See [docs/webapp-plan/database.md](docs/webapp-plan/database.md) and [storage.md](docs/webapp-plan/storage.md).
 
+## Deploying
+
+The site runs on one Windows PC with an NVIDIA GPU. `deploy\windows\setup.cmd` sets it up, and `deploy\windows\start.cmd` runs the API and the web app, with the API reached through the web app's `/api` proxy. See [docs/DEPLOY_WINDOWS.md](docs/DEPLOY_WINDOWS.md).
+
 ## Status
 
 - **Pipeline:** all stages run, including SATIE soundscapes and publishing private memories.
