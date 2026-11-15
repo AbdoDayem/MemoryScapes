@@ -2,6 +2,7 @@ import json
 import os
 import re
 from pathlib import PurePosixPath
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response
@@ -326,6 +327,9 @@ def public_url(request: Request, name: str, **params: str) -> str:
     it, e.g. ``/api`` behind the web app's proxy, or ``https://memories.example.org/api``),
     links are built on it, so they work through a proxy or tunnel. Otherwise they're built
     from the address this request came in on, as in local development."""
+    # Percent-encode the values (Starlette doesn't), so a file name like "WhatsApp Video
+    # 2026-11-14 at 5.20.26 PM.mp4" gives a URL any client can use, not only a browser.
+    params = {k: quote(v, safe="/") for k, v in params.items()}
     base = os.environ.get("PUBLIC_API_URL", "").rstrip("/")
     if base:
         return base + request.app.url_path_for(name, **params)

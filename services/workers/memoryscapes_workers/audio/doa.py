@@ -102,13 +102,28 @@ class CameraPath:
         return pos, right / (np.linalg.norm(right) + 1e-12)
 
 
+WORLD_UP = np.array([0.0, 1.0, 0.0])  # the shared world frame is +Y up
+
+
 def bearing_likelihood(
-    candidates: np.ndarray, bearings: list[Bearing], path: CameraPath, sigma: float = 0.12
+    candidates: np.ndarray, bearings: list[Bearing], path: CameraPath, sigma: float = 0.12,
+    up: np.ndarray = WORLD_UP, level_deg: float = 50.0, steep_deg: float = 80.0,
 ) -> np.ndarray:
-    """Weighted agreement (0..1) of each candidate point (M, 3) with every bearing."""
+    """Weighted agreement (0..1) of each candidate point (M, 3) with every bearing.
+
+    Candidates steeply above or below the camera are faded out (full weight up to
+    `level_deg` of elevation, none at `steep_deg`). The mic axis is horizontal, so a point
+    straight above or below the camera is broadside to it whichever way the camera faces:
+    it fits every bearing near 0 (a source ahead, or stereo with no time difference, as
+    many phones record) and wins whenever the camera turns, though the recording says
+    nothing about it. Moderate elevations (a bird in a tree) keep full weight, so the
+    usual cone ambiguity still shows up in the spread.
+    """
     total = sum(b.weight for b in bearings)
     if total <= 0:
         return np.zeros(len(candidates))
+    up = np.asarray(up, float) / np.linalg.norm(up)
+    sin_level, sin_steep = np.sin(np.radians(level_deg)), np.sin(np.radians(steep_deg))
     scores = np.zeros(len(candidates))
     for b in bearings:
         pos, axis = path.at(b.t)
@@ -117,6 +132,7 @@ def bearing_likelihood(
         u = d / np.maximum(dist, 1e-6)[:, None]
         err = u @ axis - b.cos
         s = np.exp(-(err**2) / (2 * sigma**2))
+        s *= np.clip((sin_steep - np.abs(u @ up)) / (sin_steep - sin_level), 0.0, 1.0)
         s[dist < 0.3] = 0.0  # too close to the mic for a far-field bearing to mean anything
         scores += b.weight * s
     return scores / total
