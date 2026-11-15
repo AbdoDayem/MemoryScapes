@@ -24,6 +24,7 @@ import { useEffect, useRef, useState } from "react";
 import { SatieAudioEngine } from "@/components/audio/SatieAudioEngine";
 import { getMemory, type MemoryResponse } from "@/lib/api";
 
+import { assetResolver } from "./assets";
 import { asWalkable, clampToWalkable, samplePath, type CapturePath } from "./navigation";
 import { failureSummary, pollAction, stageRows } from "./status";
 
@@ -113,7 +114,7 @@ export default function MemoryViewer({ memoryId }: { memoryId: string }) {
       });
 
     // Load SATIE's soundscape up front; it starts on the user's click.
-    const resolve = (u: string) => new URL(u, assetBase).toString();
+    const resolve = assetResolver(assetBase, window.location.href);
     const satieOut = manifest.audio.satie;
     const engine = new SatieAudioEngine(resolve);
     let badge: { destroy(): void; setPanelOpen(open: boolean): void } | null = null;
@@ -266,7 +267,7 @@ interface SceneHooks {
 async function mountScene(el: HTMLElement, manifest: MemoryManifest, assetBase: string, hooks: SceneHooks): Promise<() => void> {
   const THREE = await import("three");
   const { SparkRenderer, SplatMesh } = await import("@sparkjsdev/spark");
-  const resolve = (u: string) => new URL(u, assetBase).toString();
+  const resolve = assetResolver(assetBase, window.location.href);
 
   const renderer = new THREE.WebGLRenderer({ antialias: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));

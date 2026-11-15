@@ -476,9 +476,13 @@ class SatieMcpProvider:
         return out
 
     def _realize(self, request: SoundscapeRequest, script: str, quote_id: str) -> dict[str, Any]:
-        # Same script -> same requestKey, so a retried pipeline run resumes the same
-        # paid attempt instead of buying again (SATIE's documented recovery rule).
-        request_key = f"{request.memory_id}-{hashlib.sha256(script.encode()).hexdigest()[:16]}"
+        # Same script and stems -> same requestKey, so a retried pipeline run resumes the
+        # same paid attempt instead of buying again (SATIE's documented recovery rule). The
+        # stem URLs are part of it: when they change (another PUBLIC_API_URL), SATIE must
+        # realize again rather than replay a result that points at the old address.
+        samples = samples_map(request)
+        fingerprint = script + "\n" + json.dumps(samples, sort_keys=True)
+        request_key = f"{request.memory_id}-{hashlib.sha256(fingerprint.encode()).hexdigest()[:16]}"
         original_only = not self.cfg.allow_generation
         args = {
             "script": script,
@@ -486,7 +490,7 @@ class SatieMcpProvider:
             # and any purchase would be a sound that wasn't recorded. Never spend then.
             "maxCents": 0 if original_only else self.cfg.max_cents,
             "confirm": {"quoteId": quote_id},
-            "samples": samples_map(request),
+            "samples": samples,
             "preferLibrary": not original_only,  # no library stand-ins for our recordings
             "saveSoundscapes": self.cfg.save_soundscapes,
             "world": self.cfg.world,

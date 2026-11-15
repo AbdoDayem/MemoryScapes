@@ -16,7 +16,8 @@ Partly a scaffold: most API endpoints still return `501`. In the workers, the vi
 | `packages/manifest` | Memory manifest contract: `memory.schema.json` (source of truth) + `index.ts` (TS mirror). |
 | `infra` | `docker-compose.yml` (Postgres/PostGIS, Redis, MinIO) and `db/init.sql` (schema). |
 | `tools/debugger` | Local Vite + React + three.js UI for inspecting stage outputs and checking that the audio and splat pipelines agree. Standalone package (not an npm workspace). |
-| `docs` | `ARCHITECTURE.md`, a styled `architecture.html`, and `SPLAT_OUTPUTS.md` (what the poses/splat stages must write). |
+| `deploy` | Running the site on the Windows PC: `setup.py` (venvs, CUDA torch, models, web build, `.env`) and `serve.py` (API + web, restarted on failure), with `windows/*.cmd` launchers. Guide: `docs/DEPLOY_WINDOWS.md`. |
+| `docs` | `ARCHITECTURE.md`, a styled `architecture.html`, `SPLAT_OUTPUTS.md` (what the poses/splat stages must write), and `DEPLOY_WINDOWS.md`. |
 
 ## Commands
 
@@ -31,6 +32,7 @@ cd services/workers && pip install -e ".[audio,visual,satie]"   # model backends
 # Windows + NVIDIA: gsplat must be built from source once (cuda_env.cmd); see services/workers/README.md "GPU splat training on Windows"
 cd services/workers && memoryscapes-worker demo                  # synthetic video -> ingest -> poses -> splat (local)
 cd services/workers && memoryscapes-worker satie-login           # once per server: SATIE sign-in, saved to .satie/ (git-ignored)
+deploy\windows\setup.cmd && deploy\windows\start.cmd            # the deploy PC: set up, then run the site on :3000 (docs/DEPLOY_WINDOWS.md)
 cd services/workers && memoryscapes-worker run demo --stages publish   # manifest; then the API + dev:web -> /memories/demo
 cd services/workers && .venv/Scripts/python examples/run_example.py   # audio example memories -> examples/out/
 cd tools/debugger && npm install && npm run dev                      # debugger on :5178, with video upload (MEMORYSCAPES_DATA=<root> for other data)

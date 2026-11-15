@@ -38,6 +38,10 @@ npm install && npm run dev:web
 
 Everything beyond the skeleton is stubbed: API endpoints return `501` and pipeline stages raise `NotImplementedError`.
 
+## Deploying
+
+The site runs on one Windows PC with an NVIDIA GPU. `deploy\windows\setup.cmd` sets it up, and `deploy\windows\start.cmd` runs the API and the web app, with the API reached through the web app's `/api` proxy. See [docs/DEPLOY_WINDOWS.md](docs/DEPLOY_WINDOWS.md).
+
 ## Status
 
 Scaffold only. Build order is in [docs/ARCHITECTURE.md § 9](docs/ARCHITECTURE.md#9-build-phases).

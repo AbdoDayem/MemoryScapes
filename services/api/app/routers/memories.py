@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from pathlib import PurePosixPath
 
@@ -57,8 +58,7 @@ def create_memory(body: CreateMemoryRequest, request: Request) -> CreateMemoryRe
     memory = db.create_memory(get_settings().dev_user_id, title=body.title)
     _write_meta(memory["id"], {"expected": stored})
     return CreateMemoryResponse(id=memory["id"], uploads=[
-        UploadTarget(file_name=name, url=str(request.url_for(
-            "upload_file", memory_id=memory["id"], file_name=name)))
+        UploadTarget(file_name=name, url=public_url(request, "upload_file", memory_id=memory["id"], file_name=name))
         for name in body.file_names])
 
 
@@ -196,7 +196,7 @@ def get_memory(memory_id: str, request: Request) -> dict:
         "status": status,
         "stages": stages,
         "manifest": manifest,
-        "asset_base": str(request.url_for("get_memory_file", memory_id=memory_id, key="")),
+        "asset_base": public_url(request, "get_memory_file", memory_id=memory_id, key=""),
         "stage_detail": _stage_detail(memory_id, row is not None),
     }
     details = ("title", "description", "visibility", "lat", "lon", "location_source",
@@ -319,6 +319,17 @@ def _stored_file(memory_id: str, key: str, request: Request) -> Response | None:
         return Response(data[first:last + 1], status_code=206, media_type=info["content_type"],
                         headers={**headers, "Content-Range": f"bytes {first}-{last}/{size}"})
     return Response(data, media_type=info["content_type"], headers=headers)
+
+
+def public_url(request: Request, name: str, **params: str) -> str:
+    """A link for the browser. With PUBLIC_API_URL set (the API's address as viewers reach
+    it, e.g. ``/api`` behind the web app's proxy, or ``https://memories.example.org/api``),
+    links are built on it, so they work through a proxy or tunnel. Otherwise they're built
+    from the address this request came in on, as in local development."""
+    base = os.environ.get("PUBLIC_API_URL", "").rstrip("/")
+    if base:
+        return base + request.app.url_path_for(name, **params)
+    return str(request.url_for(name, **params))
 
 
 def _check_id(memory_id: str) -> None:

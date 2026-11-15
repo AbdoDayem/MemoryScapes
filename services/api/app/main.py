@@ -2,11 +2,20 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import db, pipeline
-from app.routers import globe, memories
+from app.settings import REPO_DIR
+
+# One configuration for the whole deploy: <repo>/.env (git-ignored). Real environment
+# variables win. The pipeline runs it starts inherit these, so SATIE's settings and
+# PUBLIC_API_URL reach the workers. Tests skip it (tests/conftest.py).
+if not os.environ.get("MEMORYSCAPES_SKIP_DOTENV"):
+    load_dotenv(REPO_DIR / ".env", override=False)
+
+from app import db, pipeline  # noqa: E402 (after .env, which they read)
+from app.routers import globe, memories  # noqa: E402
 
 
 @asynccontextmanager

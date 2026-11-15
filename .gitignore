@@ -36,3 +36,5 @@ Thumbs.db
 
 # Model checkouts and weights (AudioSep etc.)
 .models/
+# deploy/serve.py
+logs/

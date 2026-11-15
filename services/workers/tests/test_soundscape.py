@@ -370,3 +370,25 @@ def test_a_failed_satie_run_keeps_what_satie_answered(ctx):
     assert "host s1_birdsong is not bound" in scene["provider"]["fallback_reason"]
     kept = read_json(ctx.storage, ctx.key("soundscape", "satie/failed_raw.json"))
     assert set(kept) >= {"inspect", "compose", "check", "audit"}
+
+
+def test_stem_urls_can_be_root_relative_for_any_address(ctx, monkeypatch):
+    """Deployed behind the web app's /api proxy, the same memory plays at whatever address
+    people use (localhost, the LAN, a tunnel)."""
+    _write_inputs(ctx)
+    monkeypatch.setenv("PUBLIC_API_URL", "/api")
+    request = soundscape.build_request(ctx)
+    assert request.sources[0].url == "/api/memories/mem_test/files/separate/stems/s1_birdsong.wav"
+
+
+def test_new_stem_urls_get_a_new_realize(ctx, monkeypatch):
+    """Same script and stems: the same requestKey (a retry resumes). Stems at a new address
+    (PUBLIC_API_URL changed): a new key, so SATIE doesn't replay the old links."""
+    _write_inputs(ctx)
+    keys = []
+    for base in ("http://localhost:8000", "http://localhost:8000", "/api"):
+        monkeypatch.setenv("PUBLIC_API_URL", base)
+        fake = FakeSatie()
+        soundscape.run(ctx, provider=_satie(fake))
+        keys.append(next(a for n, a in fake.calls if n == "satie_realize")["requestKey"])
+    assert keys[0] == keys[1] != keys[2]

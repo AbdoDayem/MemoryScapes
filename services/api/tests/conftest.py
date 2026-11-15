@@ -1,6 +1,11 @@
+import os
+
 import pytest
 
-from app import db, settings, storage
+# Never read the developer's <repo>/.env in tests (app/main.py would load it on import).
+os.environ.setdefault("MEMORYSCAPES_SKIP_DOTENV", "1")
+
+from app import db, settings, storage  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
