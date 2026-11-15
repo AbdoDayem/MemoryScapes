@@ -16,6 +16,10 @@ This page covers what changed, what to run, what to check, and where to record r
 | #28 | **Faster viewer.** Phones stop at lod1. Spark LoD with quality tiers is chosen from frame times, and there's a `?perf` readout. | [`RENDER_SPEED.md`](RENDER_SPEED.md) |
 | #29 | **Streaming LoD trees.** Publish builds `.rad` trees with Spark's `build-lod` (Rust). Since #36, of lod0 for desktops and of lod1 for phones, so phones stream too. | [`RENDER_SPEED.md`](RENDER_SPEED.md), `services/workers/README.md` § "Publish: the streaming LoD trees" |
 | #33 | **Blur matches the training.** The manifest's `splat.antialiased` picks Spark's blur. Classic training, the default, had been drawn slightly dimmed and thinned. | [`RENDER_SPEED.md`](RENDER_SPEED.md) |
+| #39 | **First splat ~0.5 s sooner.** three.js and Spark download in parallel from page load, alongside the manifest. | [`RENDER_SPEED.md`](RENDER_SPEED.md) § "What's built" 7 |
+| #40 | **Debugger shows the training report:** held-out PSNR, `psnr_cc`, `depth_error_vs_sfm`, and the learned exposure per frame (Splat tab). | `tools/debugger/README.md` |
+| #41 | **Publish builds the two trees side by side.** `build-lod` uses one core, so this saves lod1's build time (~7 s per memory). | `services/workers/README.md` § "Publish: the streaming LoD trees" |
+| #34, #37 | **Narration publishes.** The manifest schema didn't allow #27's `narration` method, so publish rejected any memory whose voice became narration (both test clips). #34 fixed the schema, and #37 makes every example memory publish in the tests so this kind of drift gets caught. | `services/workers/tests/test_examples.py` |
 | #38 | **Exposure compensation (opt-in).** `splat.train.exposure_comp` learns a colour transform per training frame, absorbing auto exposure and white balance. It's off until run D of the A/B (step 6) measures it. The train report gains `psnr_cc` and `exposure_gains`. | [`SPATIAL_VIDEO.md`](SPATIAL_VIDEO.md) § "To improve or fix" 5 |
 
 ## Rules that matter here
@@ -149,7 +153,7 @@ This is still unmeasured; the Mac was too slow to train. Follow [`SPATIAL_VIDEO.
 - **C:** both eyes + depth loss;
 - **D:** both eyes + per-image exposure compensation (`exposure_comp`). Also try it on `IMG_9660.MOV`: night clips change exposure between frames.
 
-Compare held-out PSNR (`psnr_cc` for D) and `depth_error_vs_sfm`, record them on that page, and set the defaults (`stereo_views`, `depth_lambda`, `exposure_comp`) from the result. Its "To improve or fix" list is the next work after that.
+Compare held-out PSNR (`psnr_cc` for D) and `depth_error_vs_sfm`; the debugger's Splat tab shows them in its "Training report" panel (`cd tools\debugger`, `set MEMORYSCAPES_DATA=..\..\services\workers\data\storage`, `npm run dev`). Record them on that page, and set the defaults (`stereo_views`, `depth_lambda`, `exposure_comp`) from the result. Its "To improve or fix" list is the next work after that.
 
 ## Known issues
 
