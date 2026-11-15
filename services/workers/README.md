@@ -238,6 +238,8 @@ Cleaning, before separation (`AUDIO_CLEAN=false` turns it off):
 
 Speech is placed only on strong evidence (confidence ≥ `speech_place_min_confidence`, 0.75). Otherwise it's **narration**: no position, heard everywhere at its recorded level, and the SATIE brief asks for it to stay clearly audible. Whoever is filming talks from right at the moving mic, which can't be triangulated, and a person in frame may not be the one talking. On an iPhone clip, the filmer's voice was pinned to a bystander 4 m away (confidence 0.68), so it faded as the visitor walked away. Stereo can't tell a voice behind the phone from a person straight ahead.
 
+Footsteps follow the same rule (`filmer_labels`): in a handheld walk they're the filmer's own, under the moving mic. Without that strong evidence they're diffuse, heard everywhere. On a Tampere underpass walk they had been pinned 36 m down the tunnel (confidence 0.57), so they faded as the visitor walked on.
+
 When several stems land on one point (their prompts found the same object, like a siren and a car horn on one vehicle), the most confident keeps it, and each other moves to its best placement elsewhere if it has a good enough one on its own. Otherwise it shares the point exactly, as one object making both sounds, and `shares_with` names the keeper.
 
 Writes `localize/sources.json` with position, spread, confidence, method, `shares_with` (or null), and a level corrected to 1 m. Moving sources are placed at their dominant location for now.

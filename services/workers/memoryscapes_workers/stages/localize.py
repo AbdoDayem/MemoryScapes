@@ -52,6 +52,15 @@ class LocalizationConfig:
     # away (an iPhone clip: the filmer's voice placed on a bystander 4 m away, conf 0.68).
     unseen_speech_as_narration: bool = True
     speech_place_min_confidence: float = 0.75
+    # Footsteps in a handheld walk are the filmer's own, under the moving mic. Placed on one
+    # spot (a Tampere underpass: 36 m down the tunnel, conf 0.57) they fade as the visitor
+    # walks on. Like speech they need strong evidence of one visible spot; otherwise they're
+    # diffuse (heard everywhere). Empty to place footsteps like any other sound.
+    filmer_labels: tuple[str, ...] = ("footsteps",)
+    # Scene points this far under the walkable floor (poses/navigation.json floor_y) are left
+    # out of placement: on a shiny floor they're mirror images of the scene above. A Tampere
+    # underpass (wet floor) had points 10 m underground, and a train placed on them.
+    below_floor_m: float = 0.5
 
 
 _DEFAULT = object()
@@ -68,6 +77,7 @@ def run(ctx: StageContext, detector: Detector | None = _DEFAULT, cfg: Localizati
     index = StemsIndex.from_json(read_json(storage, ctx.key("separate", "stems.json")))
     cameras = [Camera.from_json(c) for c in read_json(storage, ctx.key("poses", "cameras.json"))]
     points = read_npy(storage, ctx.key("poses", "points3d.npy")).astype(float)
+    points = _above_floor(storage, ctx, points, cfg.below_floor_m)
     mic = MicInfo.from_json(read_json(storage, ctx.key("ingest", "meta.json"))["mic"])
 
     cam_positions = np.stack([c.position for c in cameras])
@@ -106,15 +116,15 @@ def run(ctx: StageContext, detector: Detector | None = _DEFAULT, cfg: Localizati
                 doa_scorer = lambda p, b=bearings: doa_mod.bearing_likelihood(p, b, path)  # noqa: E731
                 doa_est = doa_mod.triangulate(candidates, doa_scorer(candidates))
 
-        if cls.kind == "speech" and not clusters and cfg.unseen_speech_as_narration:
-            entries.append((stem, None))  # narration (see _diffuse)
+        carried = _carried(stem, cfg)
+        if carried and not clusters:
+            entries.append((stem, None))  # narration or diffuse (see _diffuse)
             continue
 
         agree = max(2.0, 1.5 * radius)
         placement = fuse(clusters, doa_scorer, doa_est, cfg.fusion, agree_radius_m=agree)
-        if (cls.kind == "speech" and cfg.unseen_speech_as_narration
-                and placement.confidence < cfg.speech_place_min_confidence):
-            entries.append((stem, None))  # narration: not sure enough where the voice is
+        if carried and placement.confidence < cfg.speech_place_min_confidence:
+            entries.append((stem, None))  # not sure enough where it is: heard everywhere
             continue
         entries.append((stem, Candidate(stem.id, placement, clusters, doa_scorer, doa_est, agree)))
 
@@ -177,6 +187,23 @@ def _mean_distance(pos: np.ndarray, cameras: list[Camera], activity) -> float:
     w = np.array([max(activity(c.t), 1e-3) for c in cameras])
     d = np.array([np.linalg.norm(c.position - pos) for c in cameras])
     return float(max((w * d).sum() / w.sum(), 0.5))
+
+
+def _above_floor(storage, ctx: StageContext, points: np.ndarray, below_m: float) -> np.ndarray:
+    """Points no lower than below_m under the walkable floor, when poses wrote one."""
+    key = ctx.key("poses", "navigation.json")
+    if not len(points) or not storage.exists(key):
+        return points
+    floor_y = read_json(storage, key).get("floor_y")
+    if floor_y is None:
+        return points
+    return points[points[:, 1] >= float(floor_y) - below_m]
+
+
+def _carried(stem: StemInfo, cfg: LocalizationConfig) -> bool:
+    """Sounds that usually come from whoever is filming: unplaced unless clearly seen."""
+    return ((stem.kind == "speech" and cfg.unseen_speech_as_narration)
+            or stem.label in cfg.filmer_labels)
 
 
 def _diffuse(stem: StemInfo, method: str = "diffuse") -> LocalizedSource:

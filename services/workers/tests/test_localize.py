@@ -170,3 +170,53 @@ def test_clustering_ignores_nan_points_and_zero_weights():
     pts = np.array([[0.0, 0.0, 0.0], [np.nan, 0.0, 0.0], [0.2, 0.0, 0.0], [5.0, 0.0, 0.0]])
     clusters = cluster_candidates(pts, np.array([1.0, 1.0, 1.0, 0.0]))
     assert len(clusters) == 1 and np.isfinite(clusters[0].centre).all() and clusters[0].count == 2
+
+
+def _as_footsteps(ctx):
+    """The same sound as the bird, labelled footsteps."""
+    idx = read_json(ctx.storage, ctx.key("separate", "stems.json"))
+    idx["stems"][0]["label"] = "footsteps"
+    write_json(ctx.storage, ctx.key("separate", "stems.json"), idx)
+
+
+def test_footsteps_heard_but_not_seen_are_the_filmers_and_heard_everywhere(ctx):
+    """DOA alone puts them on a spot, but footsteps in a walk are under the moving mic."""
+    _write_inputs(ctx)
+    _as_footsteps(ctx)
+    steps = next(s for s in localize.run(ctx, detector=None)["sources"] if s["label"] == "footsteps")
+    assert steps["method"] == "diffuse" and steps["position"] is None
+
+
+def test_footsteps_seen_on_one_spot_are_placed(ctx):
+    cams = _write_inputs(ctx)
+    _as_footsteps(ctx)
+    steps = next(s for s in localize.run(ctx, detector=FakeDetector(cams, SOURCE))["sources"] if s["label"] == "footsteps")
+    assert steps["method"] == "av+doa" and np.linalg.norm(np.array(steps["position"]) - SOURCE) < 0.5
+
+
+def test_footsteps_can_be_placed_like_any_sound(ctx):
+    _write_inputs(ctx)
+    _as_footsteps(ctx)
+    cfg = localize.LocalizationConfig(filmer_labels=())
+    steps = next(s for s in localize.run(ctx, detector=None, cfg=cfg)["sources"] if s["label"] == "footsteps")
+    assert steps["method"] == "doa"
+
+
+def test_nothing_is_placed_on_reflections_under_the_floor(ctx):
+    """A shiny floor mirrors the scene: SfM points under it, and a detector that finds the
+    sound's mirror image. With the floor known, placement keeps out of the underground."""
+    cams = _write_inputs(ctx)
+    wall = wall_points()
+    mirror = wall * [1, -1, 1] - [0, 0.1, 0]  # the wall reflected in the floor (y = 0)
+    write_npy(ctx.storage, ctx.key("poses", "points3d.npy"), np.concatenate([wall, mirror]))
+    reflection = SOURCE * [1, -1, 1]
+    detector = FakeDetector(cams, reflection)
+    heard = stereo_from_source(noise(DURATION, seed=7), reflection, cams, SPACING)  # the echo off the floor
+    write_wav(ctx.storage, ctx.key("separate", "stems/s1_birdsong.wav"), heard, SR)
+
+    placed_on = lambda r: next(s for s in r["sources"] if s["id"] == "s1_birdsong")["position"]  # noqa: E731
+    assert placed_on(localize.run(ctx, detector=detector))[1] < -1.0  # no floor known: underground
+
+    write_json(ctx.storage, ctx.key("poses", "navigation.json"), {"floor_y": 0.0})
+    pos = placed_on(localize.run(ctx, detector=detector))
+    assert pos is None or pos[1] > -0.5
